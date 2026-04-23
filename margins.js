@@ -15,14 +15,15 @@ function get2dContext(targetCanvas, options) {
 let appMode         = "layout";
 let savedMarginState = null;
 let lastVals        = null;   // last computed vals, used by drawContent()
+let paperColor       = "#ffffff";
+let contentBlendMode = "source-over";
 const renderState   = {
   showMarginArrows: true,
   showLayoutContent:true,
   currentCursor:    "default",
   animationFrame:   0,
-  animating:        false,
-  animationTarget:  null,
-  queuedSpread:     null,
+  animations:       [],  // { fromCanvas, toCanvas, direction, start, targetSpread }
+  baseCanvas:       null,
 };
 
 // ── Content state ─────────────────────────────────────────────────────────────
@@ -53,6 +54,10 @@ function clearListeners() {
 }
 
 // ── Layout computation ────────────────────────────────────────────────────────
+
+function applyPaperColor(color) {
+  paperColor = color;
+}
 
 function syncInputs() {
   const ratioInput = document.getElementById("ratio");
@@ -131,9 +136,10 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
     ctx.rect(x, y, w, h);
     ctx.clip();
   }
-
+  const prevBlend = ctx.globalCompositeOperation;
+  ctx.globalCompositeOperation = contentBlendMode;
   ctx.drawImage(srcCanvas, ix, iy, srcCanvas.width * s, srcCanvas.height * s);
-
+  ctx.globalCompositeOperation = prevBlend;
   if (clipToRect) ctx.restore();
 
   const visibleX = clipToRect ? Math.max(cx, x) : cx;
@@ -256,7 +262,7 @@ function paintSpread(targetCanvas, scale, vals, opts = {}) {
   ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
   ctx.save();
 
-  ctx.fillStyle = "#fff";
+  ctx.fillStyle = paperColor;
   ctx.fillRect(0, 0, pagePxW * 2, pagePxH);
 
   if (ok) {
@@ -334,9 +340,8 @@ function numSpreads() {
 }
 
 function getEffectiveSpread() {
-  if (renderState.queuedSpread !== null) return renderState.queuedSpread;
-  if (renderState.animationTarget !== null) return renderState.animationTarget;
-  return contentState.spread;
+  const anims = renderState.animations;
+  return anims.length ? anims[anims.length - 1].targetSpread : contentState.spread;
 }
 
 function updateSpreadNav() {
@@ -375,7 +380,11 @@ function renderPageStrip() {
     const tc = document.createElement("canvas");
     tc.height = THUMB_H;
     tc.width  = Math.round(THUMB_H * aspect);
-    tc.getContext("2d").drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
+    const tctx = tc.getContext("2d");
+    tctx.fillStyle = paperColor;
+    tctx.fillRect(0, 0, tc.width, tc.height);
+    tctx.globalCompositeOperation = contentBlendMode;
+    tctx.drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
     const label = document.createElement("span");
     label.textContent = i + 1;
     thumb.append(tc, label);
@@ -444,101 +453,106 @@ function drawPageSlice(img, sx, sy, sw, sh, dx, dy, dw, dh, mirrored = false) {
   ctx.restore();
 }
 
-function drawFlipFrame(fromCanvas, toCanvas, direction, progress) {
-  const width = fromCanvas.width;
-  const height = fromCanvas.height;
-  const pageW = width / 2;
-  const phase = progress < 0.5 ? "lift" : "land";
-  const phaseProgress = progress < 0.5 ? progress / 0.5 : (progress - 0.5) / 0.5;
-  const liftW = Math.max(0, pageW * (1 - phaseProgress));
-  const landW = Math.max(0, pageW * phaseProgress);
-  const leftX = 0;
-  const rightX = pageW;
-
-  ctx.clearRect(0, 0, width, height);
-
-  if (direction > 0) {
-    if (phase === "lift") {
-      drawPageSlice(fromCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
-      drawPageSlice(toCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
-      drawPageSlice(fromCanvas, pageW, 0, pageW, height, rightX, 0, liftW, height);
-    } else {
-      drawPageSlice(fromCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
-      drawPageSlice(toCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
-      drawPageSlice(toCanvas, 0, 0, pageW, height, pageW - landW, 0, landW, height);
-    }
-  } else {
-    if (phase === "lift") {
-      drawPageSlice(toCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
-      drawPageSlice(fromCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
-      drawPageSlice(fromCanvas, 0, 0, pageW, height, pageW - liftW, 0, liftW, height);
-    } else {
-      drawPageSlice(toCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
-      drawPageSlice(fromCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
-      drawPageSlice(toCanvas, pageW, 0, pageW, height, rightX, 0, landW, height);
-    }
-  }
-
-  drawPageBorder(pageW, height);
-}
-
 function stopSpreadAnimation() {
   if (renderState.animationFrame) cancelAnimationFrame(renderState.animationFrame);
   renderState.animationFrame = 0;
-  renderState.animating = false;
-  renderState.animationTarget = null;
-  renderState.queuedSpread = null;
+  renderState.animations = [];
+  renderState.baseCanvas = null;
+}
+
+function _tickAnimations(now) {
+  const W = canvas.width, H = canvas.height, pageW = W / 2;
+  ctx.clearRect(0, 0, W, H);
+  if (renderState.baseCanvas) ctx.drawImage(renderState.baseCanvas, 0, 0);
+
+  const remaining = [];
+  const liftAnims = []; // { anim, liftW } — pages in the air
+  const landAnims = []; // { anim, landW } — pages settling
+
+  for (const anim of renderState.animations) {
+    const progress = Math.min(1, (now - anim.start) / 420);
+    const phaseP   = progress < 0.5 ? progress / 0.5 : (progress - 0.5) / 0.5;
+    if (progress < 1) {
+      remaining.push(anim);
+      if (progress < 0.5)
+        liftAnims.push({ anim, liftW: Math.max(0, pageW * (1 - phaseP)) });
+      else
+        landAnims.push({ anim, landW: Math.max(0, pageW * phaseP) });
+    } else {
+      contentState.spread = anim.targetSpread;
+      renderState.baseCanvas = anim.toCanvas;
+    }
+  }
+
+  // Layer 1 — land-phase pages (lowest Z, already crossed over)
+  for (const { anim, landW } of landAnims) {
+    if (anim.direction > 0) {
+      drawPageSlice(anim.toCanvas, pageW, 0, pageW, H, pageW,         0, pageW, H);
+      drawPageSlice(anim.toCanvas, 0,     0, pageW, H, pageW - landW, 0, landW, H);
+    } else {
+      drawPageSlice(anim.toCanvas, 0,     0, pageW, H, 0,    0, pageW, H);
+      drawPageSlice(anim.toCanvas, pageW, 0, pageW, H, pageW, 0, landW, H);
+    }
+  }
+
+  // Layer 2 — lift-phase destination backgrounds (oldest → newest)
+  // Each "to" half stacks in front of the previous, revealing the final destination deepest
+  for (const { anim } of liftAnims) {
+    if (anim.direction > 0)
+      drawPageSlice(anim.toCanvas, pageW, 0, pageW, H, pageW, 0, pageW, H);
+    else
+      drawPageSlice(anim.toCanvas, 0,     0, pageW, H, 0,     0, pageW, H);
+  }
+
+  // Layer 3 — lift-phase strips (newest → oldest, so oldest strip is on top)
+  // Older page = further along its arc = physically higher = drawn last
+  for (let i = liftAnims.length - 1; i >= 0; i--) {
+    const { anim, liftW } = liftAnims[i];
+    if (anim.direction > 0)
+      drawPageSlice(anim.fromCanvas, pageW, 0, pageW, H, pageW,         0, liftW, H);
+    else
+      drawPageSlice(anim.fromCanvas, 0,     0, pageW, H, pageW - liftW, 0, liftW, H);
+  }
+
+  drawPageBorder(pageW);
+  renderState.animations = remaining;
+
+  if (remaining.length) {
+    renderState.animationFrame = requestAnimationFrame(_tickAnimations);
+  } else {
+    renderState.animationFrame = 0;
+    canvas._spreadRects = null;
+    if (appMode === "layout") draw();
+    else drawContent();
+  }
 }
 
 function animateToSpread(targetSpread) {
-  if (renderState.animating) {
-    renderState.queuedSpread = targetSpread;
-    updateSpreadNav();
-    return;
-  }
-  if (targetSpread === contentState.spread) return;
+  if (targetSpread === getEffectiveSpread()) return;
+
   if (!lastVals || !contentState.pages.length) {
     contentState.spread = targetSpread;
+    stopSpreadAnimation();
     if (appMode === "layout") draw();
     else drawContent();
     return;
   }
 
-  const currentSpread = contentState.spread;
-  const direction = targetSpread > currentSpread ? 1 : -1;
-  const fromCanvas = createSpreadSnapshot(lastVals, currentSpread);
-  const toCanvas = createSpreadSnapshot(lastVals, targetSpread);
-  const duration = 420;
-  const start = performance.now();
+  const fromSpread = getEffectiveSpread();
+  const direction  = targetSpread > fromSpread ? 1 : -1;
+  const fromCanvas = createSpreadSnapshot(lastVals, fromSpread);
+  const toCanvas   = createSpreadSnapshot(lastVals, targetSpread);
 
-  stopSpreadAnimation();
-  renderState.animating = true;
-  renderState.animationTarget = targetSpread;
+  if (!renderState.animations.length) renderState.baseCanvas = fromCanvas;
+
+  renderState.animations.push({ fromCanvas, toCanvas, direction, start: performance.now(), targetSpread });
+
   canvas._spreadRects = null;
   updateSpreadNav();
 
-  function frame(now) {
-    const progress = Math.min(1, (now - start) / duration);
-    drawFlipFrame(fromCanvas, toCanvas, direction, progress);
-
-    if (progress < 1) {
-      renderState.animationFrame = requestAnimationFrame(frame);
-      return;
-    }
-
-    contentState.spread = targetSpread;
-    const queuedSpread = renderState.queuedSpread;
-    renderState.queuedSpread = null;
-    stopSpreadAnimation();
-    if (queuedSpread !== null && queuedSpread !== contentState.spread) {
-      animateToSpread(queuedSpread);
-      return;
-    }
-    if (appMode === "layout") draw();
-    else drawContent();
+  if (!renderState.animationFrame) {
+    renderState.animationFrame = requestAnimationFrame(_tickAnimations);
   }
-
-  renderState.animationFrame = requestAnimationFrame(frame);
 }
 
 function draw() {
@@ -597,8 +611,6 @@ function hArrowLabel(x1, x2, y, text, fs) {
   ctx.beginPath(); ctx.moveTo(x1 + aw, y - ah); ctx.lineTo(x1, y); ctx.lineTo(x1 + aw, y + ah); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x2 - aw, y - ah); ctx.lineTo(x2, y); ctx.lineTo(x2 - aw, y + ah); ctx.stroke();
 
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(midX - textW / 2 - pad, y - fs / 2 - pad / 2, textW + pad * 2, fs + pad);
   ctx.fillStyle = "#000";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -624,8 +636,6 @@ function bracketLabel(x, y1, y2, text, fs) {
   ctx.beginPath(); ctx.moveTo(x - aw, y1 + ah); ctx.lineTo(x, y1); ctx.lineTo(x + aw, y1 + ah); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x - aw, y2 - ah); ctx.lineTo(x, y2); ctx.lineTo(x + aw, y2 - ah); ctx.stroke();
 
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(x - textW / 2 - pad, midY - fs / 2 - pad / 2, textW + pad * 2, fs + pad);
   ctx.fillStyle = "#000";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -740,6 +750,8 @@ function saveMarginState() {
   });
   const preset = document.getElementById("preset");
   if (preset) savedMarginState.preset = preset.value;
+  savedMarginState["paper-color"]    = paperColor;
+  savedMarginState["content-blend"]  = contentBlendMode;
 }
 
 function syncMarginArrowToggle() {
@@ -779,10 +791,32 @@ function restoreMarginState() {
   });
   const preset = document.getElementById("preset");
   if (preset && savedMarginState.preset !== undefined) preset.value = savedMarginState.preset;
+  if (savedMarginState["paper-color"]) {
+    const el = document.getElementById("paper-color");
+    if (el) el.value = savedMarginState["paper-color"];
+    applyPaperColor(savedMarginState["paper-color"]);
+  }
+  if (savedMarginState["content-blend"]) {
+    const el = document.getElementById("content-blend");
+    if (el) el.value = savedMarginState["content-blend"];
+    contentBlendMode = savedMarginState["content-blend"];
+  }
 }
 
 function initLayoutListeners() {
   initDisplayControls(draw, { includeLayoutContent: true });
+
+  addListener("paper-color", "input", function () {
+    applyPaperColor(this.value);
+    renderPageStrip();
+    draw();
+  });
+
+  addListener("content-blend", "change", function () {
+    contentBlendMode = this.value;
+    renderPageStrip();
+    draw();
+  });
 
   addListener("preset", "change", function () {
     if (!this.value) return;
@@ -1283,7 +1317,7 @@ function getHandleHitTarget(x, y) {
 }
 
 canvas.addEventListener("mousedown", e => {
-  if (renderState.animating) return;
+  if (renderState.animations.length) return;
   const { x, y } = getCanvasCoords(e);
 
   if (appMode === "layout") {
@@ -1328,7 +1362,7 @@ canvas.addEventListener("mousedown", e => {
 });
 
 canvas.addEventListener("mousemove", e => {
-  if (renderState.animating) return;
+  if (renderState.animations.length) return;
   if (appMode !== "content") return;
   const { x, y } = getCanvasCoords(e);
 
@@ -1432,7 +1466,7 @@ async function appendFiles(files) {
 // ── Resize observer ───────────────────────────────────────────────────────────
 
 const ro = new ResizeObserver(() => {
-  if (renderState.animating) return;
+  if (renderState.animations.length) return;
   if (appMode === "layout") draw();
   else drawContent();
 });
