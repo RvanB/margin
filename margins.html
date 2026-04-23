@@ -21,12 +21,10 @@
 </div>
 
 <div id="canvas-wrap">
-  <canvas id="canvas"></canvas>
-  <div id="spread-nav">
-    <button id="spread-prev" class="spread-btn" style="visibility:hidden">&#8592;</button>
-    <span id="spread-label"></span>
-    <button id="spread-next" class="spread-btn" style="visibility:hidden">&#8594;</button>
+  <div id="canvas-area">
+    <canvas id="canvas"></canvas>
   </div>
+  <div id="page-strip"></div>
 </div>
 
 <!-- ── Toolbar templates ───────────────────────────────────────────────────── -->
@@ -143,20 +141,6 @@
 </template>
 
 <template id="tpl-content">
-
-  <div class="section">
-    <div class="section-label">Load content</div>
-    <div id="drop-target">
-      Drop images or PDF here<br>
-      or <label for="file-pick" style="text-decoration:underline;cursor:pointer">browse</label>
-      <input type="file" id="file-pick" accept="image/*,.pdf" multiple style="display:none">
-    </div>
-  </div>
-
-  <div class="section" id="pages-section" style="display:none">
-    <div class="section-label">Pages</div>
-    <div id="page-list"></div>
-  </div>
 
   <div class="section" id="trim-section" style="display:none">
     <div id="trim-header">

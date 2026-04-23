@@ -1,6 +1,7 @@
-const canvas = document.getElementById("canvas");
-let ctx      = canvas.getContext("2d");
-const wrap   = document.getElementById("canvas-wrap");
+const canvas     = document.getElementById("canvas");
+let ctx          = canvas.getContext("2d");
+const wrap       = document.getElementById("canvas-wrap");
+const canvasArea = document.getElementById("canvas-area");
 
 const get = id => parseFloat(document.getElementById(id).value) || 0;
 const fmt = v  => v.toFixed(3) + "″";
@@ -339,23 +340,57 @@ function getEffectiveSpread() {
 }
 
 function updateSpreadNav() {
-  const total = numSpreads();
-  const show  = contentState.pages.length > 0 && total > 1;
-  const effectiveSpread = getEffectiveSpread();
-  const prev  = document.getElementById("spread-prev");
-  const next  = document.getElementById("spread-next");
-  const label = document.getElementById("spread-label");
-  if (prev) {
-    prev.style.visibility = show ? "visible" : "hidden";
-    prev.disabled = effectiveSpread === 0;
+  const strip = document.getElementById("page-strip");
+  if (!strip) return;
+  const spread = getEffectiveSpread();
+  const leftIdx  = spread * 2 - 1;
+  const rightIdx = spread * 2;
+  let activeEl = null;
+  strip.querySelectorAll(".strip-thumb").forEach((el, i) => {
+    const inSpread = i === leftIdx || i === rightIdx;
+    const isActive = appMode === "content" && i === contentState.editingPageIdx;
+    el.classList.toggle("in-spread", inSpread && appMode === "layout");
+    el.classList.toggle("active", isActive);
+    if (isActive || (inSpread && appMode === "layout" && !activeEl)) activeEl = el;
+  });
+  activeEl?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function renderPageStrip() {
+  const strip = document.getElementById("page-strip");
+  if (!strip) return;
+  strip.innerHTML = "";
+  if (!contentState.pages.length) {
+    strip.classList.add("empty");
+    strip.textContent = "Drop images or PDF here to add pages";
+    updateSpreadNav();
+    return;
   }
-  if (next) {
-    next.style.visibility = show ? "visible" : "hidden";
-    next.disabled = effectiveSpread >= total - 1;
-  }
-  if (label) {
-    label.textContent = show ? `${effectiveSpread + 1} / ${total}` : "";
-  }
+  strip.classList.remove("empty");
+  const THUMB_H = 56;
+  contentState.pages.forEach((pg, i) => {
+    const thumb = document.createElement("div");
+    thumb.className = "strip-thumb";
+    const aspect = pg.srcCanvas.width / pg.srcCanvas.height;
+    const tc = document.createElement("canvas");
+    tc.height = THUMB_H;
+    tc.width  = Math.round(THUMB_H * aspect);
+    tc.getContext("2d").drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
+    const label = document.createElement("span");
+    label.textContent = i + 1;
+    thumb.append(tc, label);
+    thumb.addEventListener("click", () => {
+      const targetSpread = Math.floor((i + 1) / 2);
+      if (appMode === "content") {
+        contentState.editingPageIdx = i;
+        syncPageUI();
+        drawContent();
+      }
+      animateToSpread(targetSpread);
+    });
+    strip.append(thumb);
+  });
+  updateSpreadNav();
 }
 
 // ── Layout draw ───────────────────────────────────────────────────────────────
@@ -367,8 +402,8 @@ function getSpreadFills(spreadIndex = contentState.spread) {
 }
 
 function getCanvasScale(vals) {
-  const ww = wrap.clientWidth - 64;
-  const wh = wrap.clientHeight - 64;
+  const ww = canvasArea.clientWidth - 64;
+  const wh = canvasArea.clientHeight - 64;
   return Math.min(ww / (2 * vals.pw), wh / vals.ph);
 }
 
@@ -944,10 +979,7 @@ function switchMode(mode) {
   } else {
     contentState.hoverHandle = null;
     initContentListeners();
-    if (contentState.pages.length) {
-      renderPageList();
-      showTrimSection();
-    }
+    if (contentState.pages.length) showTrimSection();
     drawContent();
   }
 }
@@ -1029,7 +1061,7 @@ async function loadPDF(file) {
   contentState.spread         = 0;
   contentState.editingPageIdx = 0;
   contentState.hoverHandle    = null;
-  renderPageList();
+  renderPageStrip();
   showTrimSection();
   drawContent();
 }
@@ -1051,7 +1083,7 @@ async function loadImages(files) {
   contentState.spread         = 0;
   contentState.editingPageIdx = 0;
   contentState.hoverHandle    = null;
-  renderPageList();
+  renderPageStrip();
   showTrimSection();
   drawContent();
 }
@@ -1065,41 +1097,6 @@ async function handleFiles(files) {
   else       await loadImages(arr);
 }
 
-function renderPageList() {
-  const list    = document.getElementById("page-list");
-  const section = document.getElementById("pages-section");
-  if (!list || !section) return;
-
-  section.style.display = contentState.pages.length ? "" : "none";
-  list.innerHTML = "";
-
-  contentState.pages.forEach((pg, i) => {
-    const thumb = document.createElement("div");
-    thumb.className = "page-thumb" + (i === contentState.editingPageIdx ? " active" : "");
-
-    const tc     = document.createElement("canvas");
-    const aspect = pg.srcCanvas.height / pg.srcCanvas.width;
-    tc.width  = 40;
-    tc.height = Math.round(40 * aspect);
-    tc.getContext("2d").drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
-
-    const label = document.createElement("span");
-    label.textContent = `Page ${i + 1}`;
-
-    thumb.append(tc, label);
-    thumb.addEventListener("click", () => {
-      contentState.spread         = Math.floor((i + 1) / 2);
-      contentState.editingPageIdx = i;
-      document.querySelectorAll(".page-thumb").forEach((el, j) =>
-        el.classList.toggle("active", j === i)
-      );
-      syncPageUI();
-      updateSpreadNav();
-      drawContent();
-    });
-    list.append(thumb);
-  });
-}
 
 // ── Content mode: canvas rendering ───────────────────────────────────────────
 
@@ -1387,6 +1384,51 @@ canvas.addEventListener("mouseleave", () => {
   }
 });
 
+// ── Strip drag-and-drop (append pages) ───────────────────────────────────────
+
+async function appendFiles(files) {
+  const arr = Array.from(files);
+  if (!arr.length) return;
+
+  const isPDF = arr[0].type === "application/pdf" ||
+                arr[0].name.toLowerCase().endsWith(".pdf");
+
+  if (isPDF) {
+    const lib = await ensurePdfjs();
+    const buf = await arr[0].arrayBuffer();
+    const pdf = await lib.getDocument({ data: buf }).promise;
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const vp   = page.getViewport({ scale: 2 });
+      const off  = document.createElement("canvas");
+      const offCtx = get2dContext(off, { willReadFrequently: true });
+      off.width = vp.width; off.height = vp.height;
+      await page.render({ canvasContext: offCtx, viewport: vp }).promise;
+      contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
+    }
+  } else {
+    for (const file of arr) {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+      const off  = document.createElement("canvas");
+      const offCtx = get2dContext(off, { willReadFrequently: true });
+      off.width = img.naturalWidth; off.height = img.naturalHeight;
+      offCtx.drawImage(img, 0, 0);
+      URL.revokeObjectURL(url);
+      contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
+    }
+  }
+
+  contentState.editingPageIdx = contentState.pages.length - 1;
+  if (appMode !== "content") switchMode("content");
+  else {
+    renderPageStrip();
+    showTrimSection();
+    drawContent();
+  }
+}
+
 // ── Resize observer ───────────────────────────────────────────────────────────
 
 const ro = new ResizeObserver(() => {
@@ -1394,24 +1436,21 @@ const ro = new ResizeObserver(() => {
   if (appMode === "layout") draw();
   else drawContent();
 });
-ro.observe(wrap);
+ro.observe(canvasArea);
 
 // ── Global init ───────────────────────────────────────────────────────────────
 
-// Spread buttons live in the canvas-wrap (always present)
-document.getElementById("spread-prev").addEventListener("click", () => {
-  const base = getEffectiveSpread();
-  if (base > 0) {
-    animateToSpread(base - 1);
-  }
-});
-document.getElementById("spread-next").addEventListener("click", () => {
-  const max = numSpreads() - 1;
-  const base = getEffectiveSpread();
-  if (base < max) {
-    animateToSpread(base + 1);
-  }
-});
+// Page strip drop zone (always-on, works in either mode)
+{
+  const strip = document.getElementById("page-strip");
+  strip.addEventListener("dragover", e => { e.preventDefault(); strip.classList.add("drag-over"); });
+  strip.addEventListener("dragleave", e => { if (!strip.contains(e.relatedTarget)) strip.classList.remove("drag-over"); });
+  strip.addEventListener("drop", e => {
+    e.preventDefault();
+    strip.classList.remove("drag-over");
+    appendFiles(e.dataTransfer.files);
+  });
+}
 
 // Mode tabs
 document.querySelectorAll(".mode-tab").forEach(btn =>
@@ -1426,5 +1465,6 @@ document.querySelectorAll(".mode-tab").forEach(btn =>
   htmx.process(toolbar);
   initLayoutListeners();
   draw();
+  renderPageStrip();
   switchMode("content");
 })();

@@ -223,50 +223,74 @@ input[type="range"] {
   flex: 1;
   display: flex;
   flex-direction: column;
+  background: #fff;
+  overflow: hidden;
+  min-width: 0;
+}
+
+#canvas-area {
+  flex: 1;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 20px;
   padding: 32px;
-  background: #fff;
+  min-height: 0;
 }
 
 canvas { max-width: 100%; max-height: 100%; }
 
-/* ── Spread navigation ──────────────────────────────────────────────────────── */
+/* ── Page strip ─────────────────────────────────────────────────────────────── */
 
-#spread-nav {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  height: 36px;
-}
-
-#spread-label {
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: #999;
-  min-width: 60px;
-  text-align: center;
-}
-
-.spread-btn {
-  font-family: inherit;
-  font-size: 18px;
-  background: none;
-  border: 1px solid #000;
-  cursor: pointer;
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #000;
-  user-select: none;
+#page-strip {
   flex-shrink: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: safe center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-top: 1px dotted #000;
+  overflow-x: auto;
+  min-height: 24px;
 }
 
-.spread-btn:disabled {
-  border-color: #ccc;
-  color: #ccc;
+.strip-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 3px;
+  border: 1px solid transparent;
+}
+
+.strip-thumb.in-spread { border-color: #ccc; }
+.strip-thumb.active    { border-color: #000; }
+
+#page-strip.empty {
+  justify-content: center;
+  min-height: 80px;
+  color: #bbb;
+  font-size: 10px;
+  letter-spacing: 0.1em;
   cursor: default;
 }
+
+#page-strip.drag-over {
+  background: #f5f5f5;
+}
+
+.strip-thumb canvas {
+  display: block;
+  border: 1px solid #ddd;
+}
+
+.strip-thumb span {
+  font-size: 9px;
+  letter-spacing: 0.05em;
+  color: #999;
+}
+
+.strip-thumb.in-spread span,
+.strip-thumb.active span { color: #000; }
