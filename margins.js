@@ -10,6 +10,13 @@ const fmt = v  => v.toFixed(3) + "″";
 let appMode         = "layout";
 let savedMarginState = null;
 let lastVals        = null;   // last computed vals, used by drawContent()
+const renderState   = {
+  showMarginArrows: true,
+  animationFrame:   0,
+  animating:        false,
+  animationTarget:  null,
+  queuedSpread:     null,
+};
 
 // ── Content state ─────────────────────────────────────────────────────────────
 
@@ -79,36 +86,148 @@ function dottedLine(x1, y1, x2, y2, dash = [3, 3]) {
   ctx.restore();
 }
 
-// Draw a page fitted into a rect, using crop to define which region of the image
-// maps to the destination — the full image is drawn (no pixels hidden).
-function drawPageContent(pg, x, y, w, h) {
+function getSpreadMetrics(vals, scale) {
+  return {
+    pagePxW: vals.pw * scale,
+    pagePxH: vals.ph * scale,
+    twPx:    vals.tw * scale,
+    thPx:    vals.th * scale,
+    topPx:   vals.top * scale,
+    innerPx: vals.inner * scale,
+    outerPx: vals.outer * scale,
+  };
+}
+
+function drawPageContent(pg, x, y, w, h, opts = {}) {
   if (!pg) return null;
+  const { mode = "fit", clipToRect = false } = opts;
   const { srcCanvas, crop } = pg;
   const sw = srcCanvas.width  - crop.left - crop.right;
   const sh = srcCanvas.height - crop.top  - crop.bottom;
   if (sw <= 0 || sh <= 0) return null;
-  const s  = Math.min(w / sw, h / sh);
+  const s  = mode === "fill" ? Math.max(w / sw, h / sh) : Math.min(w / sw, h / sh);
   const fw = sw * s, fh = sh * s;
-  // Top-left of the content region in destination space
   const cx = x + (w - fw) / 2;
   const cy = y + (h - fh) / 2;
-  // Full image origin (content is inset by crop amounts at scale s)
   const ix = cx - crop.left * s;
   const iy = cy - crop.top  * s;
+
+  if (clipToRect) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+  }
+
   ctx.drawImage(srcCanvas, ix, iy, srcCanvas.width * s, srcCanvas.height * s);
-  return { x: cx, y: cy, w: fw, h: fh, fitScale: s,
-           sw: srcCanvas.width, sh: srcCanvas.height };
+
+  if (clipToRect) ctx.restore();
+
+  return {
+    x: clipToRect ? x : cx,
+    y: clipToRect ? y : cy,
+    w: clipToRect ? w : fw,
+    h: clipToRect ? h : fh,
+    fitScale: s,
+    sw: srcCanvas.width,
+    sh: srcCanvas.height,
+  };
 }
 
-function renderSpread(targetCanvas, scale, vals, pageFills = null) {
+function buildSpreadSide(side, metrics, pg, pageIndex, hasPlacedPages) {
+  const isLeft = side === "left";
+  const pageRect = {
+    x: isLeft ? 0 : metrics.pagePxW,
+    y: 0,
+    w: metrics.pagePxW,
+    h: metrics.pagePxH,
+  };
+  const textblockRect = {
+    x: isLeft ? metrics.outerPx : metrics.pagePxW + metrics.innerPx,
+    y: metrics.topPx,
+    w: metrics.twPx,
+    h: metrics.thPx,
+  };
+  const isBlank = hasPlacedPages && !pg;
+  const isCover = !!pg?.cover;
+
+  return {
+    side,
+    page: pg,
+    pageIndex,
+    isBlank,
+    isCover,
+    overlayVisible: !isBlank && !isCover,
+    pageRect,
+    textblockRect,
+    contentRect: isCover ? pageRect : textblockRect,
+    contentMode: isCover ? "fill" : "fit",
+    drawnRect: null,
+  };
+}
+
+function getSpreadRenderState(vals, scale, pageFills = null, spreadIndex = contentState.spread) {
+  const metrics = getSpreadMetrics(vals, scale);
+  const hasPlacedPages = Array.isArray(pageFills);
+  const leftPageIdx = spreadIndex * 2 - 1;
+  const rightPageIdx = spreadIndex * 2;
+  const [leftPg, rightPg] = hasPlacedPages ? pageFills : [null, null];
+
+  return {
+    metrics,
+    sides: {
+      left:  buildSpreadSide("left", metrics, leftPg, leftPageIdx, hasPlacedPages),
+      right: buildSpreadSide("right", metrics, rightPg, rightPageIdx, hasPlacedPages),
+    },
+  };
+}
+
+function drawTextblockRect(rect) {
+  ctx.save();
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = 0.75;
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+  ctx.restore();
+}
+
+function drawMarginOverlay(side, vals, fs) {
+  if (!side.overlayVisible) return;
+
+  const { pageRect, textblockRect } = side;
+  const midY = pageRect.y + pageRect.h / 2;
+  const labelX = textblockRect.x + textblockRect.w / 2;
+
+  drawTextblockRect(textblockRect);
+
+  if (side.side === "left") {
+    hArrowLabel(pageRect.x, textblockRect.x, midY, vals.outer.toFixed(2) + "″", fs);
+    hArrowLabel(textblockRect.x + textblockRect.w, pageRect.x + pageRect.w, midY, vals.inner.toFixed(2) + "″", fs);
+  } else {
+    hArrowLabel(pageRect.x, textblockRect.x, midY, vals.inner.toFixed(2) + "″", fs);
+    hArrowLabel(textblockRect.x + textblockRect.w, pageRect.x + pageRect.w, midY, vals.outer.toFixed(2) + "″", fs);
+  }
+
+  bracketLabel(labelX, pageRect.y, textblockRect.y, vals.top.toFixed(2) + "″", fs);
+  bracketLabel(labelX, textblockRect.y + textblockRect.h, pageRect.y + pageRect.h, vals.bottom.toFixed(2) + "″", fs);
+}
+
+function paintSpread(targetCanvas, scale, vals, opts = {}) {
+  const {
+    pageFills = null,
+    showPlaceholder = false,
+    showMarginOverlay = true,
+    showVdG = false,
+    spreadIndex = contentState.spread,
+  } = opts;
   const prevCtx = ctx;
   ctx = targetCanvas.getContext("2d");
 
   const { pw, ph, inner, top, bottom, th, tw, outer } = vals;
   const ok = outer > 0 && th > 0 && tw > 0;
   const s = scale;
-  const pagePxW = pw * s;
-  const pagePxH = ph * s;
+  const { metrics, sides } = getSpreadRenderState(vals, scale, pageFills, spreadIndex);
+  const { pagePxW, pagePxH } = metrics;
 
   ctx.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
   ctx.save();
@@ -116,51 +235,48 @@ function renderSpread(targetCanvas, scale, vals, pageFills = null) {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, pagePxW * 2, pagePxH);
 
-  ctx.strokeStyle = "#000";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(0.5, 0.5, pagePxW * 2 - 1, pagePxH - 1);
-  dottedLine(pagePxW, 0, pagePxW, pagePxH, [1, 2]);
-
   if (ok) {
-    const twPx    = tw * s;
-    const thPx    = th * s;
-    const innerPx = inner * s;
-    const outerPx = outer * s;
-    const topPx   = top * s;
-    const botPx   = bottom * s;
-    const lx = outerPx, ly = topPx, rx = pagePxW + innerPx;
-
-    if (pageFills) {
-      const [lp, rp] = pageFills;
-      if (lp) drawPageContent(lp, lp.cover ? 0        : lx, lp.cover ? 0 : ly,
-                                   lp.cover ? pagePxW  : twPx, lp.cover ? pagePxH : thPx);
-      if (rp) drawPageContent(rp, rp.cover ? pagePxW  : rx, rp.cover ? 0 : ly,
-                                   rp.cover ? pagePxW  : twPx, rp.cover ? pagePxH : thPx);
-    } else {
-      fillLorem(lx, ly, twPx, thPx);
-      fillLorem(rx, ly, twPx, thPx);
+    for (const side of Object.values(sides)) {
+      if (side.page) {
+        side.drawnRect = drawPageContent(
+          side.page,
+          side.contentRect.x,
+          side.contentRect.y,
+          side.contentRect.w,
+          side.contentRect.h,
+          { mode: side.contentMode, clipToRect: side.isCover }
+        );
+      } else if (showPlaceholder) {
+        fillLorem(side.textblockRect.x, side.textblockRect.y, side.textblockRect.w, side.textblockRect.h);
+      }
     }
 
-    const vdgEl = document.getElementById("vdg");
-    if (vdgEl && vdgEl.checked) drawVdG(pagePxW, pagePxH);
+    if (showVdG) drawVdG(pagePxW, pagePxH);
 
-    const fs = Math.max(7, Math.round(s / 9));
-    ctx.font = `${fs}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
-    const mid = pagePxH / 2;
-    hArrowLabel(0,                     outerPx,           mid, outer.toFixed(2) + "″", fs);
-    hArrowLabel(pagePxW - innerPx,     pagePxW,           mid, inner.toFixed(2) + "″", fs);
-    hArrowLabel(pagePxW,               pagePxW + innerPx, mid, inner.toFixed(2) + "″", fs);
-    hArrowLabel(pagePxW * 2 - outerPx, pagePxW * 2,       mid, outer.toFixed(2) + "″", fs);
-
-    const lCx = lx + twPx / 2, rCx = rx + twPx / 2;
-    bracketLabel(lCx, 0,               topPx,   top.toFixed(2)    + "″", fs);
-    bracketLabel(rCx, 0,               topPx,   top.toFixed(2)    + "″", fs);
-    bracketLabel(lCx, pagePxH - botPx, pagePxH, bottom.toFixed(2) + "″", fs);
-    bracketLabel(rCx, pagePxH - botPx, pagePxH, bottom.toFixed(2) + "″", fs);
+    if (showMarginOverlay) {
+      const fs = Math.max(7, Math.round(s / 9));
+      ctx.font = `${fs}px "Helvetica Neue", Helvetica, Arial, sans-serif`;
+      drawMarginOverlay(sides.left, vals, fs);
+      drawMarginOverlay(sides.right, vals, fs);
+    }
   }
+
+  drawPageBorder(pagePxW, pagePxH);
 
   ctx.restore();
   ctx = prevCtx;
+  return { metrics, sides };
+}
+
+function renderSpread(targetCanvas, scale, vals, pageFills = null, spreadIndex = contentState.spread) {
+  const vdgEl = document.getElementById("vdg");
+  return paintSpread(targetCanvas, scale, vals, {
+    pageFills,
+    showPlaceholder: !pageFills,
+    showMarginOverlay: renderState.showMarginArrows,
+    showVdG: !!(vdgEl && vdgEl.checked),
+    spreadIndex,
+  });
 }
 
 // ── Spread helpers ────────────────────────────────────────────────────────────
@@ -188,31 +304,174 @@ function numSpreads() {
   return Math.max(1, Math.ceil((contentState.pages.length + 1) / 2));
 }
 
+function getEffectiveSpread() {
+  if (renderState.queuedSpread !== null) return renderState.queuedSpread;
+  if (renderState.animationTarget !== null) return renderState.animationTarget;
+  return contentState.spread;
+}
+
 function updateSpreadNav() {
   const total = numSpreads();
   const show  = contentState.pages.length > 0 && total > 1;
+  const effectiveSpread = getEffectiveSpread();
   const prev  = document.getElementById("spread-prev");
   const next  = document.getElementById("spread-next");
   const label = document.getElementById("spread-label");
   if (prev) {
     prev.style.visibility = show ? "visible" : "hidden";
-    prev.disabled = contentState.spread === 0;
+    prev.disabled = effectiveSpread === 0;
   }
   if (next) {
     next.style.visibility = show ? "visible" : "hidden";
-    next.disabled = contentState.spread >= total - 1;
+    next.disabled = effectiveSpread >= total - 1;
   }
   if (label) {
-    label.textContent = show ? `${contentState.spread + 1} / ${total}` : "";
+    label.textContent = show ? `${effectiveSpread + 1} / ${total}` : "";
   }
 }
 
 // ── Layout draw ───────────────────────────────────────────────────────────────
 
-function getSpreadFills() {
+function getSpreadFills(spreadIndex = contentState.spread) {
   if (!contentState.pages.length) return null;
-  const { leftPg, rightPg } = spreadPages(contentState.spread);
+  const { leftPg, rightPg } = spreadPages(spreadIndex);
   return [leftPg, rightPg];
+}
+
+function getCanvasScale(vals) {
+  const ww = wrap.clientWidth - 64;
+  const wh = wrap.clientHeight - 64;
+  return Math.min(ww / (2 * vals.pw), wh / vals.ph);
+}
+
+function createSpreadSnapshot(vals, spreadIndex, mode = appMode) {
+  const scale = getCanvasScale(vals);
+  const offscreen = document.createElement("canvas");
+  offscreen.width = Math.round(2 * vals.pw * scale);
+  offscreen.height = Math.round(vals.ph * scale);
+
+  if (mode === "layout") {
+    renderSpread(offscreen, scale, vals, getSpreadFills(spreadIndex), spreadIndex);
+  } else {
+    paintSpread(offscreen, scale, vals, {
+      pageFills: getSpreadFills(spreadIndex),
+      showMarginOverlay: renderState.showMarginArrows,
+      spreadIndex,
+    });
+  }
+
+  return offscreen;
+}
+
+function drawPageSlice(img, sx, sy, sw, sh, dx, dy, dw, dh, mirrored = false) {
+  if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0) return;
+  if (!mirrored) {
+    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+    return;
+  }
+
+  ctx.save();
+  ctx.translate(dx + dw, dy);
+  ctx.scale(-1, 1);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh);
+  ctx.restore();
+}
+
+function drawFlipFrame(fromCanvas, toCanvas, direction, progress) {
+  const width = fromCanvas.width;
+  const height = fromCanvas.height;
+  const pageW = width / 2;
+  const phase = progress < 0.5 ? "lift" : "land";
+  const phaseProgress = progress < 0.5 ? progress / 0.5 : (progress - 0.5) / 0.5;
+  const liftW = Math.max(0, pageW * (1 - phaseProgress));
+  const landW = Math.max(0, pageW * phaseProgress);
+  const leftX = 0;
+  const rightX = pageW;
+
+  ctx.clearRect(0, 0, width, height);
+
+  if (direction > 0) {
+    if (phase === "lift") {
+      drawPageSlice(fromCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
+      drawPageSlice(toCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
+      drawPageSlice(fromCanvas, pageW, 0, pageW, height, rightX, 0, liftW, height);
+    } else {
+      drawPageSlice(fromCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
+      drawPageSlice(toCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
+      drawPageSlice(toCanvas, 0, 0, pageW, height, pageW - landW, 0, landW, height);
+    }
+  } else {
+    if (phase === "lift") {
+      drawPageSlice(toCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
+      drawPageSlice(fromCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
+      drawPageSlice(fromCanvas, 0, 0, pageW, height, pageW - liftW, 0, liftW, height);
+    } else {
+      drawPageSlice(toCanvas, 0, 0, pageW, height, leftX, 0, pageW, height);
+      drawPageSlice(fromCanvas, pageW, 0, pageW, height, rightX, 0, pageW, height);
+      drawPageSlice(toCanvas, pageW, 0, pageW, height, rightX, 0, landW, height);
+    }
+  }
+
+  drawPageBorder(pageW, height);
+}
+
+function stopSpreadAnimation() {
+  if (renderState.animationFrame) cancelAnimationFrame(renderState.animationFrame);
+  renderState.animationFrame = 0;
+  renderState.animating = false;
+  renderState.animationTarget = null;
+  renderState.queuedSpread = null;
+}
+
+function animateToSpread(targetSpread) {
+  if (renderState.animating) {
+    renderState.queuedSpread = targetSpread;
+    updateSpreadNav();
+    return;
+  }
+  if (targetSpread === contentState.spread) return;
+  if (!lastVals || !contentState.pages.length) {
+    contentState.spread = targetSpread;
+    if (appMode === "layout") draw();
+    else drawContent();
+    return;
+  }
+
+  const currentSpread = contentState.spread;
+  const direction = targetSpread > currentSpread ? 1 : -1;
+  const fromCanvas = createSpreadSnapshot(lastVals, currentSpread);
+  const toCanvas = createSpreadSnapshot(lastVals, targetSpread);
+  const duration = 420;
+  const start = performance.now();
+
+  stopSpreadAnimation();
+  renderState.animating = true;
+  renderState.animationTarget = targetSpread;
+  canvas._spreadRects = null;
+  updateSpreadNav();
+
+  function frame(now) {
+    const progress = Math.min(1, (now - start) / duration);
+    drawFlipFrame(fromCanvas, toCanvas, direction, progress);
+
+    if (progress < 1) {
+      renderState.animationFrame = requestAnimationFrame(frame);
+      return;
+    }
+
+    contentState.spread = targetSpread;
+    const queuedSpread = renderState.queuedSpread;
+    renderState.queuedSpread = null;
+    stopSpreadAnimation();
+    if (queuedSpread !== null && queuedSpread !== contentState.spread) {
+      animateToSpread(queuedSpread);
+      return;
+    }
+    if (appMode === "layout") draw();
+    else drawContent();
+  }
+
+  renderState.animationFrame = requestAnimationFrame(frame);
 }
 
 function draw() {
@@ -229,9 +488,7 @@ function draw() {
   setC("c-tw",     ok ? fmt(tw)     : "invalid", !ok);
   setC("c-th",     ok ? fmt(th)     : "invalid", !ok);
 
-  const ww    = wrap.clientWidth  - 64;
-  const wh    = wrap.clientHeight - 64;
-  const scale = Math.min(ww / (2 * pw), wh / ph);
+  const scale = getCanvasScale(vals);
 
   canvas.width  = Math.round(2 * pw * scale);
   canvas.height = Math.round(ph * scale);
@@ -400,6 +657,19 @@ function saveMarginState() {
   if (preset) savedMarginState.preset = preset.value;
 }
 
+function syncMarginArrowToggle() {
+  const el = document.getElementById("show-margin-arrows");
+  if (el) el.checked = renderState.showMarginArrows;
+}
+
+function initMarginArrowToggle(redrawFn) {
+  syncMarginArrowToggle();
+  addListener("show-margin-arrows", "change", function () {
+    renderState.showMarginArrows = this.checked;
+    redrawFn();
+  });
+}
+
 function restoreMarginState() {
   if (!savedMarginState) return;
   ["pw","ph","page-ratio","ratio","b-slider","m-inner","m-top","m-bottom"].forEach(id => {
@@ -415,6 +685,8 @@ function restoreMarginState() {
 }
 
 function initLayoutListeners() {
+  initMarginArrowToggle(draw);
+
   addListener("preset", "change", function () {
     if (!this.value) return;
     const [w, h] = this.value.split(",").map(Number);
@@ -532,6 +804,8 @@ function syncPageUI() {
 function showTrimSection() { syncPageUI(); }
 
 function initContentListeners() {
+  initMarginArrowToggle(drawContent);
+
   const dropTarget = document.getElementById("drop-target");
   const filePick   = document.getElementById("file-pick");
 
@@ -566,6 +840,7 @@ function initContentListeners() {
 function switchMode(mode) {
   if (mode === appMode) return;
 
+  stopSpreadAnimation();
   if (appMode === "layout") saveMarginState();
   clearListeners();
   appMode    = mode;
@@ -781,60 +1056,37 @@ function drawContent() {
   const { pw, ph, inner, top, tw, th, outer } = vals;
   const ok = outer > 0 && th > 0 && tw > 0;
 
-  const ww    = wrap.clientWidth  - 64;
-  const wh    = wrap.clientHeight - 64;
-  const scale = Math.min(ww / (2 * pw), wh / ph);
+  const scale = getCanvasScale(vals);
 
   canvas.width  = Math.round(2 * pw * scale);
   canvas.height = Math.round(ph * scale);
 
-  const pagePxW = pw * scale;
-  const pagePxH = ph * scale;
-
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   if (!ok || !contentState.pages.length) {
+    const { pagePxW, pagePxH } = getSpreadMetrics(vals, scale);
     drawPageBorder(pagePxW, pagePxH);
     canvas._spreadRects = null;
     updateSpreadNav();
     return;
   }
 
-  const twPx    = tw    * scale;
-  const thPx    = th    * scale;
-  const topPx   = top   * scale;
-  const innerPx = inner * scale;
-  const outerPx = outer * scale;
-
   contentState.spread = Math.min(contentState.spread, numSpreads() - 1);
-
-  const { leftPg, rightPg, leftPageIdx, rightPageIdx } = spreadPages(contentState.spread);
-
-  // Helper: pick rendering rect based on cover flag
-  function pageRect(pg, tbX) {
-    return pg?.cover
-      ? { rx: tbX === outerPx ? 0 : pagePxW, ry: 0,     rw: pagePxW, rh: pagePxH }
-      : { rx: tbX,                            ry: topPx, rw: twPx,    rh: thPx    };
-  }
-
-  const lr = pageRect(leftPg,  outerPx);
-  const rr = pageRect(rightPg, pagePxW + innerPx);
-
-  const leftRect  = drawPageContent(leftPg,  lr.rx, lr.ry, lr.rw, lr.rh);
-  const rightRect = drawPageContent(rightPg, rr.rx, rr.ry, rr.rw, rr.rh);
-
-  // Page border drawn on top so it's always visible over cover images
-  drawPageBorder(pagePxW, pagePxH);
+  const { metrics, sides } = paintSpread(canvas, scale, vals, {
+    pageFills: getSpreadFills(contentState.spread),
+    showMarginOverlay: renderState.showMarginArrows,
+    spreadIndex: contentState.spread,
+  });
 
   canvas._spreadRects = {
-    left:  leftRect  ? { ...leftRect,  pageIndex: leftPageIdx  } : null,
-    right: rightRect ? { ...rightRect, pageIndex: rightPageIdx } : null,
-    pagePxW,
+    left:  sides.left.drawnRect  ? { ...sides.left.drawnRect,  pageIndex: sides.left.pageIndex  } : null,
+    right: sides.right.drawnRect ? { ...sides.right.drawnRect, pageIndex: sides.right.pageIndex } : null,
+    pagePxW: metrics.pagePxW,
   };
 
   // Draw crop handles for the editing page (always visible in content mode)
-  if (leftPageIdx  === contentState.editingPageIdx && leftRect)  drawCropHandles(leftRect);
-  if (rightPageIdx === contentState.editingPageIdx && rightRect) drawCropHandles(rightRect);
+  if (sides.left.pageIndex  === contentState.editingPageIdx && sides.left.drawnRect)  drawCropHandles(sides.left.drawnRect);
+  if (sides.right.pageIndex === contentState.editingPageIdx && sides.right.drawnRect) drawCropHandles(sides.right.drawnRect);
 
   updateSpreadNav();
 }
@@ -873,7 +1125,7 @@ function hitTestHandle(cx, cy, r) {
 }
 
 canvas.addEventListener("mousedown", e => {
-  if (appMode !== "content") return;
+  if (appMode !== "content" || renderState.animating) return;
   const { x, y } = getCanvasCoords(e);
   const rects = canvas._spreadRects;
   if (!rects) return;
@@ -906,7 +1158,7 @@ canvas.addEventListener("mousedown", e => {
 });
 
 canvas.addEventListener("mousemove", e => {
-  if (appMode !== "content") return;
+  if (appMode !== "content" || renderState.animating) return;
   const { x, y } = getCanvasCoords(e);
 
   if (dragHandle) {
@@ -966,6 +1218,7 @@ canvas.addEventListener("mouseleave", () => {
 // ── Resize observer ───────────────────────────────────────────────────────────
 
 const ro = new ResizeObserver(() => {
+  if (renderState.animating) return;
   if (appMode === "layout") draw();
   else drawContent();
 });
@@ -975,18 +1228,16 @@ ro.observe(wrap);
 
 // Spread buttons live in the canvas-wrap (always present)
 document.getElementById("spread-prev").addEventListener("click", () => {
-  if (contentState.spread > 0) {
-    contentState.spread--;
-    if (appMode === "layout") draw();
-    else drawContent();
+  const base = getEffectiveSpread();
+  if (base > 0) {
+    animateToSpread(base - 1);
   }
 });
 document.getElementById("spread-next").addEventListener("click", () => {
   const max = numSpreads() - 1;
-  if (contentState.spread < max) {
-    contentState.spread++;
-    if (appMode === "layout") draw();
-    else drawContent();
+  const base = getEffectiveSpread();
+  if (base < max) {
+    animateToSpread(base + 1);
   }
 });
 
