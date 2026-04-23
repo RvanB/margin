@@ -5,6 +5,10 @@ const wrap   = document.getElementById("canvas-wrap");
 const get = id => parseFloat(document.getElementById(id).value) || 0;
 const fmt = v  => v.toFixed(3) + "″";
 
+function get2dContext(targetCanvas, options) {
+  return targetCanvas.getContext("2d", options);
+}
+
 // ── Mode state ────────────────────────────────────────────────────────────────
 
 let appMode         = "layout";
@@ -12,6 +16,8 @@ let savedMarginState = null;
 let lastVals        = null;   // last computed vals, used by drawContent()
 const renderState   = {
   showMarginArrows: true,
+  showLayoutContent:true,
+  currentCursor:    "default",
   animationFrame:   0,
   animating:        false,
   animationTarget:  null,
@@ -24,9 +30,9 @@ const contentState = {
   pages:          [],  // [{ srcCanvas, crop: {top,left,right,bottom} }]
   spread:         0,
   editingPageIdx: 0,
+  hoverHandle:    null,  // { side, edge } of handle being hovered
 };
 
-let activeSide  = null;  // 'left' | 'right' | null — hovered side in content mode
 let dragHandle  = null;  // { edge, startX, startY, startCrop, side }
 
 // ── Listener registry ─────────────────────────────────────────────────────────
@@ -80,8 +86,8 @@ function dottedLine(x1, y1, x2, y2, dash = [3, 3]) {
   ctx.save();
   ctx.setLineDash(dash);
   ctx.beginPath();
-  ctx.moveTo(x1, y1);
-  ctx.lineTo(x2, y2);
+  ctx.moveTo(Math.round(x1), Math.round(y1));
+  ctx.lineTo(Math.round(x2), Math.round(y2));
   ctx.stroke();
   ctx.restore();
 }
@@ -105,7 +111,13 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
   const sw = srcCanvas.width  - crop.left - crop.right;
   const sh = srcCanvas.height - crop.top  - crop.bottom;
   if (sw <= 0 || sh <= 0) return null;
-  const s  = mode === "fill" ? Math.max(w / sw, h / sh) : Math.min(w / sw, h / sh);
+  const s  = mode === "fill"
+    ? Math.max(w / sw, h / sh)
+    : mode === "fit-width"
+      ? w / sw
+      : mode === "fit-height"
+        ? h / sh
+        : Math.min(w / sw, h / sh);
   const fw = sw * s, fh = sh * s;
   const cx = x + (w - fw) / 2;
   const cy = y + (h - fh) / 2;
@@ -123,11 +135,16 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
 
   if (clipToRect) ctx.restore();
 
+  const visibleX = clipToRect ? Math.max(cx, x) : cx;
+  const visibleY = clipToRect ? Math.max(cy, y) : cy;
+  const visibleRight = clipToRect ? Math.min(cx + fw, x + w) : cx + fw;
+  const visibleBottom = clipToRect ? Math.min(cy + fh, y + h) : cy + fh;
+
   return {
-    x: clipToRect ? x : cx,
-    y: clipToRect ? y : cy,
-    w: clipToRect ? w : fw,
-    h: clipToRect ? h : fh,
+    x: visibleX,
+    y: visibleY,
+    w: Math.max(0, visibleRight - visibleX),
+    h: Math.max(0, visibleBottom - visibleY),
     fitScale: s,
     sw: srcCanvas.width,
     sh: srcCanvas.height,
@@ -136,6 +153,9 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
 
 function buildSpreadSide(side, metrics, pg, pageIndex, hasPlacedPages) {
   const isLeft = side === "left";
+  const fitMode = pg?.fitAxis === "width" || pg?.fitAxis === "height" || pg?.fitAxis === "inside"
+    ? pg.fitAxis
+    : "inside";
   const pageRect = {
     x: isLeft ? 0 : metrics.pagePxW,
     y: 0,
@@ -161,7 +181,8 @@ function buildSpreadSide(side, metrics, pg, pageIndex, hasPlacedPages) {
     pageRect,
     textblockRect,
     contentRect: isCover ? pageRect : textblockRect,
-    contentMode: isCover ? "fill" : "fit",
+    contentMode: isCover ? "fill" : fitMode === "width" ? "fit-width" : fitMode === "height" ? "fit-height" : "fit",
+    clipContent: isCover,
     drawnRect: null,
   };
 }
@@ -183,11 +204,13 @@ function getSpreadRenderState(vals, scale, pageFills = null, spreadIndex = conte
 }
 
 function drawTextblockRect(rect) {
+  const x = Math.round(rect.x), y = Math.round(rect.y);
+  const w = Math.round(rect.w), h = Math.round(rect.h);
   ctx.save();
   ctx.strokeStyle = "#000";
-  ctx.lineWidth = 0.75;
-  ctx.setLineDash([4, 3]);
-  ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+  ctx.lineWidth = 1;
+  ctx.setLineDash([1, 2]);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
   ctx.restore();
 }
 
@@ -244,7 +267,7 @@ function paintSpread(targetCanvas, scale, vals, opts = {}) {
           side.contentRect.y,
           side.contentRect.w,
           side.contentRect.h,
-          { mode: side.contentMode, clipToRect: side.isCover }
+          { mode: side.contentMode, clipToRect: side.clipContent }
         );
       } else if (showPlaceholder) {
         fillLorem(side.textblockRect.x, side.textblockRect.y, side.textblockRect.w, side.textblockRect.h);
@@ -268,11 +291,16 @@ function paintSpread(targetCanvas, scale, vals, opts = {}) {
   return { metrics, sides };
 }
 
-function renderSpread(targetCanvas, scale, vals, pageFills = null, spreadIndex = contentState.spread) {
+function renderSpread(targetCanvas, scale, vals, opts = {}) {
   const vdgEl = document.getElementById("vdg");
+  const {
+    pageFills = renderState.showLayoutContent ? getSpreadFills() : null,
+    showPlaceholder = !contentState.pages.length,
+    spreadIndex = contentState.spread,
+  } = opts;
   return paintSpread(targetCanvas, scale, vals, {
     pageFills,
-    showPlaceholder: !pageFills,
+    showPlaceholder,
     showMarginOverlay: renderState.showMarginArrows,
     showVdG: !!(vdgEl && vdgEl.checked),
     spreadIndex,
@@ -351,11 +379,15 @@ function createSpreadSnapshot(vals, spreadIndex, mode = appMode) {
   offscreen.height = Math.round(vals.ph * scale);
 
   if (mode === "layout") {
-    renderSpread(offscreen, scale, vals, getSpreadFills(spreadIndex), spreadIndex);
+    renderSpread(offscreen, scale, vals, {
+      pageFills: renderState.showLayoutContent ? getSpreadFills(spreadIndex) : null,
+      showPlaceholder: !contentState.pages.length,
+      spreadIndex,
+    });
   } else {
     paintSpread(offscreen, scale, vals, {
       pageFills: getSpreadFills(spreadIndex),
-      showMarginOverlay: renderState.showMarginArrows,
+      showMarginOverlay: false,
       spreadIndex,
     });
   }
@@ -492,25 +524,37 @@ function draw() {
 
   canvas.width  = Math.round(2 * pw * scale);
   canvas.height = Math.round(ph * scale);
+  setCanvasCursor(renderState.currentCursor);
 
   contentState.spread = Math.min(contentState.spread, numSpreads() - 1);
 
-  renderSpread(canvas, scale, vals, getSpreadFills());
+  const { metrics, sides } = renderSpread(canvas, scale, vals, {
+    pageFills: renderState.showLayoutContent ? getSpreadFills() : null,
+    showPlaceholder: !contentState.pages.length,
+  });
+  canvas._spreadRects = renderState.showLayoutContent && contentState.pages.length
+    ? {
+        left: sides.left.drawnRect ? { ...sides.left.drawnRect, pageIndex: sides.left.pageIndex } : null,
+        right: sides.right.drawnRect ? { ...sides.right.drawnRect, pageIndex: sides.right.pageIndex } : null,
+        pagePxW: metrics.pagePxW,
+      }
+    : null;
   updateSpreadNav();
 }
 
 // ── Arrow / bracket label helpers ─────────────────────────────────────────────
 
 function hArrowLabel(x1, x2, y, text, fs) {
+  x1 = Math.round(x1); x2 = Math.round(x2); y = Math.round(y) + 0.5;
   const pad   = fs * 0.5;
-  const midX  = (x1 + x2) / 2;
+  const midX  = Math.round((x1 + x2) / 2);
   const textW = ctx.measureText(text).width;
-  const aw    = fs * 0.6;
-  const ah    = fs * 0.35;
+  const aw    = Math.round(fs * 0.6);
+  const ah    = Math.round(fs * 0.35);
 
   ctx.save();
   ctx.strokeStyle = "#000";
-  ctx.lineWidth   = 0.75;
+  ctx.lineWidth   = 1;
 
   ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(midX - textW / 2 - pad, y); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(midX + textW / 2 + pad, y); ctx.lineTo(x2, y); ctx.stroke();
@@ -528,15 +572,16 @@ function hArrowLabel(x1, x2, y, text, fs) {
 }
 
 function bracketLabel(x, y1, y2, text, fs) {
+  x = Math.round(x) + 0.5; y1 = Math.round(y1); y2 = Math.round(y2);
   const pad   = fs * 0.5;
-  const midY  = (y1 + y2) / 2;
+  const midY  = Math.round((y1 + y2) / 2);
   const textW = ctx.measureText(text).width;
-  const aw    = fs * 0.35;
-  const ah    = fs * 0.6;
+  const aw    = Math.round(fs * 0.35);
+  const ah    = Math.round(fs * 0.6);
 
   ctx.save();
   ctx.strokeStyle = "#000";
-  ctx.lineWidth   = 0.75;
+  ctx.lineWidth   = 1;
 
   ctx.beginPath(); ctx.moveTo(x, y1); ctx.lineTo(x, midY - fs / 2 - pad); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(x, midY + fs / 2 + pad); ctx.lineTo(x, y2); ctx.stroke();
@@ -554,13 +599,17 @@ function bracketLabel(x, y1, y2, text, fs) {
 }
 
 function drawVdG(W, H) {
+  W = Math.round(W); H = Math.round(H);
   ctx.save();
   ctx.strokeStyle = "#000";
-  ctx.lineWidth   = 0.75;
+  ctx.lineWidth   = 1;
   ctx.setLineDash([1, 2]);
 
   function line(x1, y1, x2, y2) {
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(Math.round(x1), Math.round(y1));
+    ctx.lineTo(Math.round(x2), Math.round(y2));
+    ctx.stroke();
   }
 
   line(0, 0,   2*W, H);   line(0, H,   2*W, 0);
@@ -570,8 +619,9 @@ function drawVdG(W, H) {
   line(p1x, p1y, p1x, 0);  line(p2x, p2y, p2x, 0);
   line(p1x, 0,   p2x, p2y); line(p2x, 0,   p1x, p1y);
 
-  ctx.strokeRect(2*W/9, H/9, 2*W/3, 2*H/3);
-  ctx.strokeRect(W + W/9, H/9, 2*W/3, 2*H/3);
+  const r = (v) => Math.round(v);
+  ctx.strokeRect(r(2*W/9)+0.5, r(H/9)+0.5, r(2*W/3)-1, r(2*H/3)-1);
+  ctx.strokeRect(r(W+W/9)+0.5, r(H/9)+0.5, r(2*W/3)-1, r(2*H/3)-1);
   ctx.restore();
 }
 
@@ -662,12 +712,24 @@ function syncMarginArrowToggle() {
   if (el) el.checked = renderState.showMarginArrows;
 }
 
-function initMarginArrowToggle(redrawFn) {
+function syncLayoutContentToggle() {
+  const el = document.getElementById("show-layout-content");
+  if (el) el.checked = renderState.showLayoutContent;
+}
+
+function initDisplayControls(redrawFn, { includeLayoutContent = false } = {}) {
   syncMarginArrowToggle();
+  syncLayoutContentToggle();
   addListener("show-margin-arrows", "change", function () {
     renderState.showMarginArrows = this.checked;
     redrawFn();
   });
+  if (includeLayoutContent) {
+    addListener("show-layout-content", "change", function () {
+      renderState.showLayoutContent = this.checked;
+      redrawFn();
+    });
+  }
 }
 
 function restoreMarginState() {
@@ -685,7 +747,7 @@ function restoreMarginState() {
 }
 
 function initLayoutListeners() {
-  initMarginArrowToggle(draw);
+  initDisplayControls(draw, { includeLayoutContent: true });
 
   addListener("preset", "change", function () {
     if (!this.value) return;
@@ -757,7 +819,10 @@ function initLayoutListeners() {
     const printCanvas = document.createElement("canvas");
     printCanvas.width  = Math.round(2 * pw * DPI);
     printCanvas.height = Math.round(ph * DPI);
-    renderSpread(printCanvas, DPI, vals, getSpreadFills());
+    renderSpread(printCanvas, DPI, vals, {
+      pageFills: renderState.showLayoutContent ? getSpreadFills() : null,
+      showPlaceholder: !contentState.pages.length,
+    });
 
     const win = window.open("", "_blank");
     win.document.write(`<!DOCTYPE html><html><head><style>
@@ -799,12 +864,19 @@ function syncPageUI() {
   setTrimUI(pg.tolerance);
   const coverEl = document.getElementById("cover-check");
   if (coverEl) coverEl.checked = pg.cover;
+  const fitAxisEl = document.getElementById("fit-axis");
+  if (fitAxisEl) {
+    fitAxisEl.value = pg.fitAxis === "width" || pg.fitAxis === "height" || pg.fitAxis === "inside"
+      ? pg.fitAxis
+      : "inside";
+    fitAxisEl.disabled = !!pg.cover;
+  }
 }
 
 function showTrimSection() { syncPageUI(); }
 
 function initContentListeners() {
-  initMarginArrowToggle(drawContent);
+  initDisplayControls(drawContent);
 
   const dropTarget = document.getElementById("drop-target");
   const filePick   = document.getElementById("file-pick");
@@ -832,6 +904,16 @@ function initContentListeners() {
     const pg = contentState.pages[contentState.editingPageIdx];
     if (pg) {
       pg.cover = document.getElementById("cover-check").checked;
+      syncPageUI();
+      drawContent();
+    }
+  });
+
+  addListener("fit-axis", "change", () => {
+    const pg = contentState.pages[contentState.editingPageIdx];
+    if (pg) {
+      const value = document.getElementById("fit-axis").value;
+      pg.fitAxis = value === "width" || value === "height" ? value : "inside";
       drawContent();
     }
   });
@@ -844,7 +926,6 @@ function switchMode(mode) {
   if (appMode === "layout") saveMarginState();
   clearListeners();
   appMode    = mode;
-  activeSide = null;
 
   document.querySelectorAll(".mode-tab").forEach(btn =>
     btn.classList.toggle("active", btn.dataset.mode === mode)
@@ -861,6 +942,7 @@ function switchMode(mode) {
     initLayoutListeners();
     draw();
   } else {
+    contentState.hoverHandle = null;
     initContentListeners();
     if (contentState.pages.length) {
       renderPageList();
@@ -874,7 +956,7 @@ function switchMode(mode) {
 
 function autoCrop(srcCanvas, tolerance = 15) {
   const w = srcCanvas.width, h = srcCanvas.height;
-  const data = srcCanvas.getContext("2d").getImageData(0, 0, w, h).data;
+  const data = get2dContext(srcCanvas, { willReadFrequently: true }).getImageData(0, 0, w, h).data;
 
   // A pixel is background if its average distance from white (255,255,255) ≤ tolerance.
   // tolerance=0 → only pure white is background; tolerance=255 → everything is background.
@@ -938,13 +1020,15 @@ async function loadPDF(file) {
     const page = await pdf.getPage(i);
     const vp   = page.getViewport({ scale: 2 });
     const off  = document.createElement("canvas");
+    const offCtx = get2dContext(off, { willReadFrequently: true });
     off.width  = vp.width;
     off.height = vp.height;
-    await page.render({ canvasContext: off.getContext("2d"), viewport: vp }).promise;
-    contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false });
+    await page.render({ canvasContext: offCtx, viewport: vp }).promise;
+    contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
   }
   contentState.spread         = 0;
   contentState.editingPageIdx = 0;
+  contentState.hoverHandle    = null;
   renderPageList();
   showTrimSection();
   drawContent();
@@ -957,14 +1041,16 @@ async function loadImages(files) {
     const img = new Image();
     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
     const off  = document.createElement("canvas");
+    const offCtx = get2dContext(off, { willReadFrequently: true });
     off.width  = img.naturalWidth;
     off.height = img.naturalHeight;
-    off.getContext("2d").drawImage(img, 0, 0);
+    offCtx.drawImage(img, 0, 0);
     URL.revokeObjectURL(url);
-    contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false });
+    contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
   }
   contentState.spread         = 0;
   contentState.editingPageIdx = 0;
+  contentState.hoverHandle    = null;
   renderPageList();
   showTrimSection();
   drawContent();
@@ -1004,7 +1090,6 @@ function renderPageList() {
     thumb.addEventListener("click", () => {
       contentState.spread         = Math.floor((i + 1) / 2);
       contentState.editingPageIdx = i;
-      activeSide = (i + 1) % 2 === 1 ? "right" : "left";
       document.querySelectorAll(".page-thumb").forEach((el, j) =>
         el.classList.toggle("active", j === i)
       );
@@ -1018,29 +1103,50 @@ function renderPageList() {
 
 // ── Content mode: canvas rendering ───────────────────────────────────────────
 
-function drawCropHandles(r) {
+function drawCropHandles(r, hoverEdge = null) {
   if (!r) return;
-  const { x, y, w, h } = r;
-  const hs = 5;
+  const x = Math.round(r.x), y = Math.round(r.y);
+  const w = Math.round(r.w), h = Math.round(r.h);
+  const T = CROP_HANDLE_THICK, L = CROP_HANDLE_LEN;
 
+  // Solid content-rect border
   ctx.save();
-  ctx.strokeStyle = "#2563eb";
+  ctx.strokeStyle = "#000";
   ctx.lineWidth   = 1;
-  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
-  ctx.beginPath(); ctx.moveTo(x,   y);   ctx.lineTo(x+w, y);   ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x+w, y);   ctx.lineTo(x+w, y+h); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x+w, y+h); ctx.lineTo(x,   y+h); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(x,   y+h); ctx.lineTo(x,   y);   ctx.stroke();
+  const handles = [
+    { edge: "top",    hx: Math.round(x + w/2 - L/2), hy: Math.round(y - T/2),     hw: L, hh: T, axis: "h" },
+    { edge: "bottom", hx: Math.round(x + w/2 - L/2), hy: Math.round(y+h - T/2),   hw: L, hh: T, axis: "h" },
+    { edge: "left",   hx: Math.round(x - T/2),        hy: Math.round(y + h/2-L/2), hw: T, hh: L, axis: "v" },
+    { edge: "right",  hx: Math.round(x+w - T/2),      hy: Math.round(y + h/2-L/2), hw: T, hh: L, axis: "v" },
+  ];
 
-  ctx.setLineDash([]);
-  ctx.fillStyle = "#2563eb";
-  [
-    [x + w/2, y    ],
-    [x + w,   y+h/2],
-    [x + w/2, y+h  ],
-    [x,       y+h/2],
-  ].forEach(([hx, hy]) => ctx.fillRect(hx - hs, hy - hs, hs*2, hs*2));
+  for (const { edge, hx, hy, hw, hh, axis } of handles) {
+    const hovered = edge === hoverEdge;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(hx, hy, hw, hh); ctx.clip();
+
+    // White background
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(hx, hy, hw, hh);
+    // Every-other-pixel lengthwise stripes (hidden on hover)
+    if (!hovered) {
+      ctx.fillStyle = "#000";
+      if (axis === "h") {
+        for (let i = 0; i < hh; i += 2)
+          ctx.fillRect(hx, hy + i, hw, 1);
+      } else {
+        for (let i = 0; i < hw; i += 2)
+          ctx.fillRect(hx + i, hy, 1, hh);
+      }
+    }
+
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth   = 1;
+    ctx.strokeRect(hx + 0.5, hy + 0.5, hw - 1, hh - 1);
+    ctx.restore();
+  }
 
   ctx.restore();
 }
@@ -1060,6 +1166,7 @@ function drawContent() {
 
   canvas.width  = Math.round(2 * pw * scale);
   canvas.height = Math.round(ph * scale);
+  setCanvasCursor(renderState.currentCursor);
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -1074,7 +1181,7 @@ function drawContent() {
   contentState.spread = Math.min(contentState.spread, numSpreads() - 1);
   const { metrics, sides } = paintSpread(canvas, scale, vals, {
     pageFills: getSpreadFills(contentState.spread),
-    showMarginOverlay: renderState.showMarginArrows,
+    showMarginOverlay: false,
     spreadIndex: contentState.spread,
   });
 
@@ -1084,20 +1191,25 @@ function drawContent() {
     pagePxW: metrics.pagePxW,
   };
 
-  // Draw crop handles for the editing page (always visible in content mode)
-  if (sides.left.pageIndex  === contentState.editingPageIdx && sides.left.drawnRect)  drawCropHandles(sides.left.drawnRect);
-  if (sides.right.pageIndex === contentState.editingPageIdx && sides.right.drawnRect) drawCropHandles(sides.right.drawnRect);
+  const hh = contentState.hoverHandle;
+  const hoverEdge = hh?.edge ?? null;
+  if (sides.left.pageIndex  === contentState.editingPageIdx && sides.left.drawnRect)
+    drawCropHandles(sides.left.drawnRect,  hh?.side === "left"  ? hoverEdge : null);
+  if (sides.right.pageIndex === contentState.editingPageIdx && sides.right.drawnRect)
+    drawCropHandles(sides.right.drawnRect, hh?.side === "right" ? hoverEdge : null);
 
   updateSpreadNav();
 }
 
 function drawPageBorder(pagePxW, pagePxH) {
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  const mid = Math.round(pagePxW);
   ctx.save();
   ctx.strokeStyle = "#000";
   ctx.lineWidth   = 1;
-  ctx.strokeRect(0.5, 0.5, pagePxW * 2 - 1, pagePxH - 1);
+  ctx.strokeRect(0.5, 0.5, W - 1, H - 1);
   ctx.setLineDash([1, 2]);
-  ctx.beginPath(); ctx.moveTo(pagePxW, 0); ctx.lineTo(pagePxW, pagePxH); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(mid + 0.5, 0); ctx.lineTo(mid + 0.5, H); ctx.stroke();
   ctx.restore();
 }
 
@@ -1111,34 +1223,97 @@ function getCanvasCoords(e) {
   };
 }
 
+const CROP_HANDLE_THICK = 9;   // handle short dimension (px)
+const CROP_HANDLE_LEN   = 44;  // handle long dimension (px)
+const CROP_HANDLE_PAD   = 5;   // hit-test padding around handle rect
+
+function setCanvasCursor(cursor = "default") {
+  renderState.currentCursor = cursor;
+  const applied = cursor === "default" ? "" : cursor;
+  document.documentElement.style.setProperty("cursor", applied, "important");
+  document.body.style.setProperty("cursor", applied, "important");
+  canvas.style.cursor = cursor;
+  wrap.style.cursor = cursor;
+}
+
+function pointInRect(x, y, rect, pad = 0) {
+  return !!rect &&
+    x >= rect.x - pad &&
+    x <= rect.x + rect.w + pad &&
+    y >= rect.y - pad &&
+    y <= rect.y + rect.h + pad;
+}
+
+function getSpreadHitTarget(x, y, pad = 0) {
+  const rects = canvas._spreadRects;
+  if (!rects) return null;
+  if (pointInRect(x, y, rects.left, pad)) return { side: "left", rect: rects.left, rects };
+  if (pointInRect(x, y, rects.right, pad)) return { side: "right", rect: rects.right, rects };
+  return null;
+}
+
 function hitTestHandle(cx, cy, r) {
   if (!r) return null;
   const { x, y, w, h } = r;
-  const hs = 8;
+  const T = CROP_HANDLE_THICK / 2 + CROP_HANDLE_PAD;
+  const L = CROP_HANDLE_LEN  / 2 + CROP_HANDLE_PAD;
   const handles = [
-    { edge: "top",    hx: x+w/2, hy: y     },
-    { edge: "right",  hx: x+w,   hy: y+h/2 },
-    { edge: "bottom", hx: x+w/2, hy: y+h   },
-    { edge: "left",   hx: x,     hy: y+h/2 },
+    { edge: "top",    hx: x+w/2, hy: y,     dx: L, dy: T },
+    { edge: "right",  hx: x+w,   hy: y+h/2, dx: T, dy: L },
+    { edge: "bottom", hx: x+w/2, hy: y+h,   dx: L, dy: T },
+    { edge: "left",   hx: x,     hy: y+h/2, dx: T, dy: L },
   ];
-  return handles.find(h => Math.abs(cx - h.hx) <= hs && Math.abs(cy - h.hy) <= hs) || null;
+  return handles.find(h => Math.abs(cx - h.hx) <= h.dx && Math.abs(cy - h.hy) <= h.dy) || null;
+}
+
+function getHandleHitTarget(x, y) {
+  const rects = canvas._spreadRects;
+  if (!rects) return null;
+
+  const matches = [];
+  for (const side of ["left", "right"]) {
+    const rect = rects[side];
+    const handle = hitTestHandle(x, y, rect);
+    if (!handle) continue;
+    const dx = x - handle.hx;
+    const dy = y - handle.hy;
+    matches.push({ side, rect, handle, distanceSq: dx * dx + dy * dy });
+  }
+
+  if (!matches.length) return null;
+  matches.sort((a, b) => a.distanceSq - b.distanceSq);
+  return matches[0];
 }
 
 canvas.addEventListener("mousedown", e => {
-  if (appMode !== "content" || renderState.animating) return;
+  if (renderState.animating) return;
   const { x, y } = getCanvasCoords(e);
-  const rects = canvas._spreadRects;
-  if (!rects) return;
 
-  const side    = x < rects.pagePxW ? "left" : "right";
-  const sideRect = rects[side];
-  if (!sideRect) return;
+  if (appMode === "layout") {
+    const hit = getSpreadHitTarget(x, y);
+    if (hit?.rect) {
+      if (hit.rect.pageIndex >= 0) contentState.editingPageIdx = hit.rect.pageIndex;
+      switchMode("content");
+    }
+    return;
+  }
+  if (appMode !== "content") return;
 
-  // Select this page for editing
+  // Check handles first (they extend slightly beyond the image rect)
+  const handleHit = getHandleHitTarget(x, y);
+  const spreadHit = handleHit ?? getSpreadHitTarget(x, y);
+
+  if (!spreadHit?.rect) {
+    // Clicked outside all page images — switch back to layout mode
+    switchMode("layout");
+    return;
+  }
+
+  const { side, rect: sideRect } = spreadHit;
   const pageIdx = sideRect.pageIndex;
+
   if (contentState.editingPageIdx !== pageIdx) {
     contentState.editingPageIdx = pageIdx;
-    activeSide = side;
     syncPageUI();
     document.querySelectorAll(".page-thumb").forEach((el, j) =>
       el.classList.toggle("active", j === pageIdx)
@@ -1147,18 +1322,17 @@ canvas.addEventListener("mousedown", e => {
   }
 
   // Start drag if on a handle
-  const handle = hitTestHandle(x, y, sideRect);
+  const handle = handleHit?.handle ?? hitTestHandle(x, y, sideRect);
   if (handle) {
     const pg = contentState.pages[pageIdx];
     dragHandle = { edge: handle.edge, startX: x, startY: y, startCrop: { ...pg.crop }, side };
-    canvas.style.cursor = (handle.edge === "top" || handle.edge === "bottom")
-      ? "ns-resize" : "ew-resize";
     e.preventDefault();
   }
 });
 
 canvas.addEventListener("mousemove", e => {
-  if (appMode !== "content" || renderState.animating) return;
+  if (renderState.animating) return;
+  if (appMode !== "content") return;
   const { x, y } = getCanvasCoords(e);
 
   if (dragHandle) {
@@ -1192,27 +1366,25 @@ canvas.addEventListener("mousemove", e => {
     return;
   }
 
-  // Hover: update active side and cursor
-  const rects   = canvas._spreadRects;
-  const newSide = rects ? (x < rects.pagePxW ? "left" : "right") : null;
-  const sideRect = newSide ? rects[newSide] : null;
-  const handle  = hitTestHandle(x, y, sideRect);
-
-  canvas.style.cursor = handle
-    ? (handle.edge === "top" || handle.edge === "bottom" ? "ns-resize" : "ew-resize")
-    : "default";
-
-  if (newSide !== activeSide) {
-    activeSide = newSide;
+  // Update handle hover highlight
+  const handleHit = getHandleHitTarget(x, y);
+  const newHoverHandle = handleHit
+    ? { side: handleHit.side, edge: handleHit.handle.edge }
+    : null;
+  const prev = contentState.hoverHandle;
+  if (newHoverHandle?.side !== prev?.side || newHoverHandle?.edge !== prev?.edge) {
+    contentState.hoverHandle = newHoverHandle;
     drawContent();
   }
 });
 
-canvas.addEventListener("mouseup",    () => { dragHandle = null; canvas.style.cursor = "default"; });
+canvas.addEventListener("mouseup", () => { dragHandle = null; });
 canvas.addEventListener("mouseleave", () => {
   dragHandle = null;
-  canvas.style.cursor = "default";
-  if (appMode !== "content" && activeSide !== null) { activeSide = null; drawContent(); }
+  if (contentState.hoverHandle !== null) {
+    contentState.hoverHandle = null;
+    if (appMode === "content") drawContent();
+  }
 });
 
 // ── Resize observer ───────────────────────────────────────────────────────────
@@ -1246,7 +1418,7 @@ document.querySelectorAll(".mode-tab").forEach(btn =>
   btn.addEventListener("click", () => switchMode(btn.dataset.mode))
 );
 
-// Enter layout mode on load
+// Initialize layout defaults, then enter content mode on load
 (function init() {
   const tpl     = document.getElementById("tpl-layout");
   const toolbar = document.getElementById("toolbar");
@@ -1254,4 +1426,5 @@ document.querySelectorAll(".mode-tab").forEach(btn =>
   htmx.process(toolbar);
   initLayoutListeners();
   draw();
+  switchMode("content");
 })();
