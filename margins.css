@@ -14,11 +14,20 @@ body {
   width: 220px;
   min-width: 220px;
   border-right: 1px solid #000;
-  padding: 16px 14px;
+  padding: 16px 14px 16px;
   display: flex;
   flex-direction: column;
   gap: 0;
   overflow-y: auto;
+}
+
+/* ── Sidebar header ─────────────────────────────────────────────────────────── */
+
+#sidebar-header {
+  border-bottom: 1px dotted #000;
+  padding-bottom: 0;
+  margin-bottom: 0;
+  flex-shrink: 0;
 }
 
 h1 {
@@ -26,10 +35,45 @@ h1 {
   font-weight: normal;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  padding-bottom: 14px;
-  margin-bottom: 14px;
-  border-bottom: 1px dotted #000;
+  padding-bottom: 10px;
 }
+
+/* ── Mode tabs ──────────────────────────────────────────────────────────────── */
+
+#mode-tabs {
+  display: flex;
+  border-top: 1px dotted #000;
+}
+
+.mode-tab {
+  flex: 1;
+  padding: 6px 0;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: #999;
+  transition: color 0.1s;
+}
+
+.mode-tab.active {
+  color: #000;
+  border-bottom-color: #000;
+}
+
+/* ── Toolbar (swappable region) ─────────────────────────────────────────────── */
+
+#toolbar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Layout mode sections ───────────────────────────────────────────────────── */
 
 .section {
   padding: 12px 0;
@@ -80,11 +124,14 @@ input[type="number"]:focus, select:focus {
 .dim-row .unit { color: #666; font-size: 10px; }
 
 /* slider */
-#slider-header {
+#slider-header, #trim-header {
   display: flex;
   justify-content: space-between;
   margin-bottom: 6px;
 }
+
+#trim-header .section-label { margin: 0; }
+#trim-val { font-size: 10px; color: #666; }
 
 #b-val { font-size: 12px; }
 
@@ -114,13 +161,112 @@ input[type="range"] {
 .computed-row:last-child { border-bottom: none; }
 .computed-row.warn * { color: #000; text-decoration: underline; }
 
+/* ── Content mode ───────────────────────────────────────────────────────────── */
+
+#drop-target {
+  border: 1px dashed #999;
+  padding: 18px 8px;
+  text-align: center;
+  font-size: 10px;
+  color: #666;
+  line-height: 1.8;
+  cursor: default;
+  transition: border-color 0.1s, color 0.1s;
+}
+
+#drop-target.drag-over {
+  border-color: #000;
+  border-style: solid;
+  color: #000;
+}
+
+#page-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.page-thumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.page-thumb.active {
+  border-color: #000;
+}
+
+.page-thumb canvas {
+  width: 40px;
+  height: auto;
+  display: block;
+  border: 1px solid #ddd;
+  flex-shrink: 0;
+}
+
+.page-thumb span {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: #666;
+}
+
+.page-thumb.active span { color: #000; }
+
+/* ── Canvas area ────────────────────────────────────────────────────────────── */
+
 #canvas-wrap {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 20px;
   padding: 32px;
   background: #fff;
 }
 
 canvas { max-width: 100%; max-height: 100%; }
+
+/* ── Spread navigation ──────────────────────────────────────────────────────── */
+
+#spread-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 36px;
+}
+
+#spread-label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #999;
+  min-width: 60px;
+  text-align: center;
+}
+
+.spread-btn {
+  font-family: inherit;
+  font-size: 18px;
+  background: none;
+  border: 1px solid #000;
+  cursor: pointer;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #000;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.spread-btn:disabled {
+  border-color: #ccc;
+  color: #ccc;
+  cursor: default;
+}

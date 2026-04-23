@@ -4,14 +4,34 @@
   <meta charset="UTF-8">
   <title>Margins</title>
   <link rel="stylesheet" href="margins.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
 </head>
 <body>
 
 <div id="sidebar">
-  <div style="display:flex;align-items:baseline;justify-content:space-between">
+  <div id="sidebar-header">
     <h1>Margins</h1>
-    <button id="print-btn" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:none;cursor:pointer;padding:0">Print</button>
+    <div id="mode-tabs">
+      <button class="mode-tab active" data-mode="layout">Layout</button>
+      <button class="mode-tab" data-mode="content">Content</button>
+    </div>
   </div>
+
+  <div id="toolbar"><!-- populated by JS --></div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="canvas"></canvas>
+  <div id="spread-nav">
+    <button id="spread-prev" class="spread-btn" style="visibility:hidden">&#8592;</button>
+    <span id="spread-label"></span>
+    <button id="spread-next" class="spread-btn" style="visibility:hidden">&#8594;</button>
+  </div>
+</div>
+
+<!-- ── Toolbar templates ───────────────────────────────────────────────────── -->
+
+<template id="tpl-layout">
 
   <div class="section">
     <div class="section-label">Page preset</div>
@@ -96,9 +116,11 @@
     <button id="vdg-snap" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:1px solid #000;padding:2px 6px;cursor:pointer">Apply</button>
   </div>
 
-
   <div class="section">
-    <div class="section-label" style="margin-bottom:8px">Computed</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="section-label" style="margin:0">Computed</div>
+      <button id="print-btn" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:none;cursor:pointer;padding:0">Print</button>
+    </div>
     <div class="computed-row"><span>inner</span><span id="c-inner">—</span></div>
     <div class="computed-row"><span>top</span><span id="c-top">—</span></div>
     <div class="computed-row"><span>outer</span><span id="c-outer">—</span></div>
@@ -106,11 +128,39 @@
     <div class="computed-row"><span>tb width</span><span id="c-tw">—</span></div>
     <div class="computed-row"><span>tb height</span><span id="c-th">—</span></div>
   </div>
-</div>
 
-<div id="canvas-wrap">
-  <canvas id="canvas"></canvas>
-</div>
+</template>
+
+<template id="tpl-content">
+
+  <div class="section">
+    <div class="section-label">Load content</div>
+    <div id="drop-target">
+      Drop images or PDF here<br>
+      or <label for="file-pick" style="text-decoration:underline;cursor:pointer">browse</label>
+      <input type="file" id="file-pick" accept="image/*,.pdf" multiple style="display:none">
+    </div>
+  </div>
+
+  <div class="section" id="pages-section" style="display:none">
+    <div class="section-label">Pages</div>
+    <div id="page-list"></div>
+  </div>
+
+  <div class="section" id="trim-section" style="display:none">
+    <div id="trim-header">
+      <span class="section-label" style="margin:0">Trim</span>
+      <span id="trim-val"></span>
+    </div>
+    <input type="range" id="trim-slider" min="0" max="255" step="1" value="15">
+    <div class="slider-ends"><span>none</span><span>max</span></div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+      <input type="checkbox" id="cover-check">
+      <span style="font-size:11px">Cover / full bleed</span>
+    </label>
+  </div>
+
+</template>
 
 <script src="margins.js"></script>
 </body>
