@@ -349,7 +349,7 @@ function updateSpreadNav() {
   strip.querySelectorAll(".strip-thumb").forEach((el, i) => {
     const inSpread = i === leftIdx || i === rightIdx;
     const isActive = appMode === "content" && i === contentState.editingPageIdx;
-    el.classList.toggle("in-spread", inSpread && appMode === "layout");
+    el.classList.toggle("in-spread", inSpread);
     el.classList.toggle("active", isActive);
     if (isActive || (inSpread && appMode === "layout" && !activeEl)) activeEl = el;
   });
@@ -1451,6 +1451,16 @@ ro.observe(canvasArea);
     appendFiles(e.dataTransfer.files);
   });
 }
+
+// Arrow key spread navigation
+document.addEventListener("keydown", e => {
+  if (e.target.matches("input, select, textarea")) return;
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const base = getEffectiveSpread();
+  const max  = numSpreads() - 1;
+  if (e.key === "ArrowLeft"  && base > 0)   animateToSpread(base - 1);
+  if (e.key === "ArrowRight" && base < max) animateToSpread(base + 1);
+});
 
 // Mode tabs
 document.querySelectorAll(".mode-tab").forEach(btn =>
