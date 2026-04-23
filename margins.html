@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Margins</title>
+  <link rel="stylesheet" href="margins.css">
+</head>
+<body>
+
+<div id="sidebar">
+  <div style="display:flex;align-items:baseline;justify-content:space-between">
+    <h1>Margins</h1>
+    <button id="print-btn" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:none;cursor:pointer;padding:0">Print</button>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Page preset</div>
+    <select id="preset">
+      <option value="">— custom —</option>
+      <option value="8.5,11">US Letter (8.5 × 11)</option>
+      <option value="5.5,8.5" selected>Half Letter (5.5 × 8.5)</option>
+      <option value="6,9">Trade Paperback (6 × 9)</option>
+      <option value="5.25,8">Digest (5.25 × 8)</option>
+      <option value="4.19,6.75">Mass Market PB (4.19 × 6.75)</option>
+      <option value="8.27,11.69">A4 (8.27 × 11.69)</option>
+      <option value="5.83,8.27">A5 (5.83 × 8.27)</option>
+      <option value="4.13,5.83">A6 (4.13 × 5.83)</option>
+      <option value="6.93,9.84">B5 (6.93 × 9.84)</option>
+    </select>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Page (inches)</div>
+    <div class="dim-row">
+      <label>width</label>
+      <input type="number" id="pw" step="0.01" min="1" max="20" value="5.5">
+      <span class="unit">in</span>
+    </div>
+    <div class="dim-row">
+      <label>height</label>
+      <input type="number" id="ph" step="0.01" min="1" max="30" value="8.5">
+      <span class="unit">in</span>
+    </div>
+    <div class="dim-row" style="margin-top:4px">
+      <label>ratio</label>
+      <input type="number" id="page-ratio" step="0.001" min="0.1" max="2" value="0.647">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
+      <input type="checkbox" id="preserve-ratio">
+      <span style="font-size:11px">Preserve ratio</span>
+    </label>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Text block ratio (w/h)</div>
+    <div class="dim-row">
+      <input type="number" id="ratio" step="0.001" min="0.1" max="2" value="0.543">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
+      <input type="checkbox" id="ratio-same-as-page">
+      <span style="font-size:11px">Same as page</span>
+    </label>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Back margin</div>
+    <div id="slider-header">
+      <span>b</span>
+      <span id="b-val">0.75 in</span>
+    </div>
+    <input type="range" id="b-slider" min="0.1" max="1.5" step="0.01" value="0.75">
+    <div class="slider-ends"><span>0.1</span><span>1.5</span></div>
+  </div>
+
+  <div class="section">
+    <div class="section-label">Proportions (× b)</div>
+    <div class="dim-row">
+      <label>inner</label>
+      <input type="number" id="m-inner" step="0.05" min="0.1" value="1">
+    </div>
+    <div class="dim-row">
+      <label>top</label>
+      <input type="number" id="m-top" step="0.05" min="0.1" value="1.5">
+    </div>
+    <div class="dim-row">
+      <label>bottom</label>
+      <input type="number" id="m-bottom" step="0.05" min="0.1" value="2.5">
+    </div>
+  </div>
+
+  <div class="section" style="display:flex;align-items:center;justify-content:space-between">
+    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" id="vdg">
+      <span class="section-label" style="margin:0">Van de Graaf</span>
+    </label>
+    <button id="vdg-snap" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:1px solid #000;padding:2px 6px;cursor:pointer">Apply</button>
+  </div>
+
+
+  <div class="section">
+    <div class="section-label" style="margin-bottom:8px">Computed</div>
+    <div class="computed-row"><span>inner</span><span id="c-inner">—</span></div>
+    <div class="computed-row"><span>top</span><span id="c-top">—</span></div>
+    <div class="computed-row"><span>outer</span><span id="c-outer">—</span></div>
+    <div class="computed-row"><span>bottom</span><span id="c-bottom">—</span></div>
+    <div class="computed-row"><span>tb width</span><span id="c-tw">—</span></div>
+    <div class="computed-row"><span>tb height</span><span id="c-th">—</span></div>
+  </div>
+</div>
+
+<div id="canvas-wrap">
+  <canvas id="canvas"></canvas>
+</div>
+
+<script src="margins.js"></script>
+</body>
+</html>

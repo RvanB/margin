@@ -1,0 +1,126 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  background: #fff;
+  color: #000;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#sidebar {
+  width: 220px;
+  min-width: 220px;
+  border-right: 1px solid #000;
+  padding: 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow-y: auto;
+}
+
+h1 {
+  font-size: 11px;
+  font-weight: normal;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: 1px dotted #000;
+}
+
+.section {
+  padding: 12px 0;
+  border-bottom: 1px dotted #000;
+}
+
+.section-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+select, input[type="number"] {
+  width: 100%;
+  padding: 3px 4px;
+  border: 1px solid #000;
+  border-radius: 0;
+  font-family: inherit;
+  font-size: 11px;
+  background: #fff;
+  color: #000;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+select { cursor: pointer; }
+
+input[type="number"]:focus, select:focus {
+  outline: none;
+  border-style: solid;
+}
+
+.dim-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+
+.dim-row label {
+  width: 52px;
+  flex-shrink: 0;
+}
+
+.dim-row input { flex: 1; }
+
+.dim-row .unit { color: #666; font-size: 10px; }
+
+/* slider */
+#slider-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+#b-val { font-size: 12px; }
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #000;
+  cursor: pointer;
+  height: 14px;
+}
+
+.slider-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #666;
+  margin-top: 2px;
+}
+
+/* computed */
+.computed-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  border-bottom: 1px dotted #ccc;
+}
+
+.computed-row:last-child { border-bottom: none; }
+.computed-row.warn * { color: #000; text-decoration: underline; }
+
+#canvas-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  background: #fff;
+}
+
+canvas { max-width: 100%; max-height: 100%; }
