@@ -9,6 +9,7 @@ export class SpreadRenderer {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = get2dContext(canvas);
+    this.backendName = "2d";
     this.effectCache = new WeakMap();
     this.animationFrame = 0;
     this.animations = [];

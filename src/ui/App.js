@@ -16,7 +16,7 @@ function cloneSet(set) {
 }
 
 export class App {
-  constructor(spreadCanvas, overlayCanvas, stripContainer) {
+  constructor(spreadCanvas, overlayCanvas, stripContainer, { rendererClass = SpreadRenderer } = {}) {
     this.spreadCanvas = spreadCanvas;
     this.overlayCanvas = overlayCanvas;
     this.overlayCtx = overlayCanvas.getContext("2d");
@@ -46,7 +46,9 @@ export class App {
     this.dragHandle = null;
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.animationCompletionScheduled = false;
-    this.spreadRenderer = new SpreadRenderer(spreadCanvas);
+    this.spreadRenderer = new rendererClass(spreadCanvas);
+    globalThis.__rendererBackend = this.spreadRenderer.backendName;
+    document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
     this.lazyPageLoader = new LazyPageLoader(this.book, pageIndex => this.onPageReady(pageIndex));
     this.pageStrip = new PageStrip(stripContainer, {
       onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
@@ -114,6 +116,9 @@ export class App {
   }
 
   redraw() {
+    globalThis.__rendererBackend = this.spreadRenderer.backendName;
+    document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
+
     if (this.uiState.appMode === "layout") {
       this.syncBookLayoutFromInputs();
     }
@@ -684,7 +689,14 @@ export class App {
         spreadRects: null,
         spreadSideStates: sideStates,
       });
-      snapshot.getContext("2d").drawImage(overlayCanvas, 0, 0);
+      const composite = document.createElement("canvas");
+      composite.width = snapshot.width;
+      composite.height = snapshot.height;
+      const compositeCtx = composite.getContext("2d");
+      compositeCtx.drawImage(snapshot, 0, 0);
+      compositeCtx.drawImage(overlayCanvas, 0, 0);
+      this.spreadRenderer.rememberSnapshotScene?.(composite, snapshot);
+      return composite;
     }
 
     return snapshot;
