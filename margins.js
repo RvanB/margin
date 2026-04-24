@@ -29,13 +29,21 @@ const renderState   = {
 // ── Content state ─────────────────────────────────────────────────────────────
 
 const contentState = {
-  pages:          [],  // [{ srcCanvas, crop: {top,left,right,bottom} }]
-  spread:         0,
-  editingPageIdx: 0,
-  hoverHandle:    null,  // { side, edge } of handle being hovered
+  pages:              [],  // [{ pageNum, aspectRatio, srcCanvas, loading, cropInitialized, crop, tolerance, cover, fitAxis, thumbnail }]
+  pdfDoc:             null,
+  spread:             0,
+  editingPageIdx:     0,
+  selectedPageIdxs:   new Set([0]),
+  hoverHandle:        null,
 };
 
 let dragHandle  = null;  // { edge, startX, startY, startCrop, side }
+
+function getSelectedPages() {
+  const sel = contentState.selectedPageIdxs;
+  if (!sel.size) return [contentState.pages[contentState.editingPageIdx]].filter(Boolean);
+  return [...sel].map(i => contentState.pages[i]).filter(Boolean);
+}
 
 // ── Listener registry ─────────────────────────────────────────────────────────
 
@@ -88,12 +96,20 @@ function setC(id, val, warn) {
 
 // ── Drawing primitives ────────────────────────────────────────────────────────
 
+// Pixel-perfect strokeRect: snap corners (not x+w) so right/bottom edges
+// don't drift 1px due to independent rounding.
+function snappedStrokeRect(x, y, w, h) {
+  const x0 = Math.round(x),     y0 = Math.round(y);
+  const x1 = Math.round(x + w), y1 = Math.round(y + h);
+  ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
+}
+
 function dottedLine(x1, y1, x2, y2, dash = [3, 3]) {
   ctx.save();
   ctx.setLineDash(dash);
   ctx.beginPath();
-  ctx.moveTo(Math.round(x1), Math.round(y1));
-  ctx.lineTo(Math.round(x2), Math.round(y2));
+  ctx.moveTo(Math.round(x1) + 0.5, Math.round(y1) + 0.5);
+  ctx.lineTo(Math.round(x2) + 0.5, Math.round(y2) + 0.5);
   ctx.stroke();
   ctx.restore();
 }
@@ -111,7 +127,7 @@ function getSpreadMetrics(vals, scale) {
 }
 
 function drawPageContent(pg, x, y, w, h, opts = {}) {
-  if (!pg) return null;
+  if (!pg || !pg.srcCanvas) return null;
   const { mode = "fit", clipToRect = false } = opts;
   const { srcCanvas, crop } = pg;
   const sw = srcCanvas.width  - crop.left - crop.right;
@@ -124,33 +140,44 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
       : mode === "fit-height"
         ? h / sh
         : Math.min(w / sw, h / sh);
-  const fw = sw * s, fh = sh * s;
-  const cx = x + (w - fw) / 2;
-  const cy = y + (h - fh) / 2;
-  const ix = cx - crop.left * s;
-  const iy = cy - crop.top  * s;
+
+  // Snap full image draw rect to integer pixels so drawImage never sub-pixel blurs.
+  const rix = Math.round(x + (w - sw * s) / 2 - crop.left * s);
+  const riy = Math.round(y + (h - sh * s) / 2 - crop.top  * s);
+  const riw = Math.round(srcCanvas.width  * s);
+  const rih = Math.round(srcCanvas.height * s);
+
+  // Pixel-snapped clip/content boundaries derived from the rounded draw rect.
+  const rcx  = Math.round(rix + crop.left  * riw / srcCanvas.width);
+  const rcy  = Math.round(riy + crop.top   * rih / srcCanvas.height);
+  const rcx2 = Math.round(rix + (srcCanvas.width  - crop.right)  * riw / srcCanvas.width);
+  const rcy2 = Math.round(riy + (srcCanvas.height - crop.bottom) * rih / srcCanvas.height);
+
+  // Pixel-snapped destination clip rect (for cover/fill mode).
+  const rx0 = Math.round(x),      ry0 = Math.round(y);
+  const rx1 = Math.round(x + w),  ry1 = Math.round(y + h);
 
   if (clipToRect) {
     ctx.save();
     ctx.beginPath();
-    ctx.rect(x, y, w, h);
+    ctx.rect(rx0, ry0, rx1 - rx0, ry1 - ry0);
     ctx.clip();
   }
   const prevBlend = ctx.globalCompositeOperation;
   ctx.globalCompositeOperation = contentBlendMode;
-  ctx.drawImage(srcCanvas, ix, iy, srcCanvas.width * s, srcCanvas.height * s);
+  ctx.drawImage(srcCanvas, rix, riy, riw, rih);
   ctx.globalCompositeOperation = prevBlend;
   if (clipToRect) ctx.restore();
 
-  const visibleX = clipToRect ? Math.max(cx, x) : cx;
-  const visibleY = clipToRect ? Math.max(cy, y) : cy;
-  const visibleRight = clipToRect ? Math.min(cx + fw, x + w) : cx + fw;
-  const visibleBottom = clipToRect ? Math.min(cy + fh, y + h) : cy + fh;
+  const visibleX      = clipToRect ? Math.max(rcx,  rx0) : rcx;
+  const visibleY      = clipToRect ? Math.max(rcy,  ry0) : rcy;
+  const visibleRight  = clipToRect ? Math.min(rcx2, rx1) : rcx2;
+  const visibleBottom = clipToRect ? Math.min(rcy2, ry1) : rcy2;
 
   return {
     x: visibleX,
     y: visibleY,
-    w: Math.max(0, visibleRight - visibleX),
+    w: Math.max(0, visibleRight  - visibleX),
     h: Math.max(0, visibleBottom - visibleY),
     fitScale: s,
     sw: srcCanvas.width,
@@ -211,13 +238,11 @@ function getSpreadRenderState(vals, scale, pageFills = null, spreadIndex = conte
 }
 
 function drawTextblockRect(rect) {
-  const x = Math.round(rect.x), y = Math.round(rect.y);
-  const w = Math.round(rect.w), h = Math.round(rect.h);
   ctx.save();
   ctx.strokeStyle = "#000";
   ctx.lineWidth = 1;
   ctx.setLineDash([1, 2]);
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  snappedStrokeRect(rect.x, rect.y, rect.w, rect.h);
   ctx.restore();
 }
 
@@ -354,11 +379,118 @@ function updateSpreadNav() {
   strip.querySelectorAll(".strip-thumb").forEach((el, i) => {
     const inSpread = i === leftIdx || i === rightIdx;
     const isActive = appMode === "content" && i === contentState.editingPageIdx;
+    const isSelected = appMode === "content" && contentState.selectedPageIdxs.has(i);
     el.classList.toggle("in-spread", inSpread);
     el.classList.toggle("active", isActive);
+    el.classList.toggle("selected", isSelected);
     if (isActive || (inSpread && appMode === "layout" && !activeEl)) activeEl = el;
   });
   activeEl?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// ── Lazy page loading ─────────────────────────────────────────────────────────
+
+function makePdfPageDescriptor(pageNum, aspectRatio) {
+  return {
+    pageNum, aspectRatio,
+    srcCanvas: null, loading: false,
+    crop: { top: 0, left: 0, right: 0, bottom: 0 },
+    cropInitialized: false,
+    tolerance: 15, cover: false, fitAxis: "inside",
+    thumbnail: null,
+  };
+}
+
+function generateThumbnail(pg) {
+  if (!pg.srcCanvas) return;
+  const THUMB_H = 56;
+  const tc = document.createElement("canvas");
+  tc.height = THUMB_H;
+  tc.width  = Math.round(THUMB_H * pg.aspectRatio);
+  const tctx = tc.getContext("2d");
+  tctx.fillStyle = paperColor;
+  tctx.fillRect(0, 0, tc.width, tc.height);
+  tctx.globalCompositeOperation = contentBlendMode;
+  tctx.drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
+  pg.thumbnail = tc;
+}
+
+function regenerateAllThumbnails() {
+  for (const pg of contentState.pages) {
+    pg.thumbnail = null;
+    if (pg.srcCanvas) generateThumbnail(pg);
+  }
+  renderPageStrip();
+}
+
+async function renderPdfPage(pageIdx) {
+  const pg = contentState.pages[pageIdx];
+  if (!pg || pg.srcCanvas || pg.loading || !pg.pageNum || !contentState.pdfDoc) return;
+  pg.loading = true;
+  try {
+    const page = await contentState.pdfDoc.getPage(pg.pageNum);
+    const vp   = page.getViewport({ scale: 2 });
+    const off  = document.createElement("canvas");
+    off.width  = vp.width; off.height = vp.height;
+    await page.render({ canvasContext: get2dContext(off, { willReadFrequently: true }), viewport: vp }).promise;
+    pg.srcCanvas    = off;
+    pg.aspectRatio  = off.width / off.height;
+    pg.loading      = false;
+    if (!pg.cropInitialized) {
+      pg.crop            = autoCrop(off, pg.tolerance);
+      pg.cropInitialized = true;
+    }
+    generateThumbnail(pg);
+    // Update strip thumb for this page without rebuilding the whole strip
+    const strip = document.getElementById("page-strip");
+    const thumb = strip?.querySelectorAll(".strip-thumb")[pageIdx];
+    if (thumb && pg.thumbnail) {
+      const oldCanvas = thumb.querySelector("canvas");
+      if (oldCanvas) {
+        const nc = document.createElement("canvas");
+        nc.width  = pg.thumbnail.width;
+        nc.height = pg.thumbnail.height;
+        nc.getContext("2d").drawImage(pg.thumbnail, 0, 0);
+        oldCanvas.replaceWith(nc);
+      }
+    }
+    const spread = contentState.spread;
+    const { leftPageIdx, rightPageIdx } = spreadPages(spread);
+    if (pageIdx === leftPageIdx || pageIdx === rightPageIdx) {
+      if (appMode === "content") drawContent();
+      else draw();
+    }
+  } catch (e) {
+    pg.loading = false;
+  }
+}
+
+function unloadPdfPage(pageIdx) {
+  const pg = contentState.pages[pageIdx];
+  if (!pg || !pg.srcCanvas || !pg.pageNum) return; // never unload image pages
+  pg.srcCanvas = null;
+  pg.gpuCanvas = null;
+}
+
+let _lastEnsuredSpread = -1;
+
+function ensureSpreadLoaded(spreadIdx) {
+  _lastEnsuredSpread = spreadIdx;
+  const n = numSpreads();
+  for (let s = Math.max(0, spreadIdx - 1); s <= Math.min(n - 1, spreadIdx + 1); s++) {
+    const { leftPageIdx, rightPageIdx } = spreadPages(s);
+    if (leftPageIdx >= 0) renderPdfPage(leftPageIdx);
+    if (rightPageIdx >= 0 && rightPageIdx < contentState.pages.length) renderPdfPage(rightPageIdx);
+  }
+  // Unload pages far from current spread
+  const KEEP = 3;
+  const keep = new Set();
+  for (let s = Math.max(0, spreadIdx - KEEP); s <= Math.min(n - 1, spreadIdx + KEEP); s++) {
+    const { leftPageIdx, rightPageIdx } = spreadPages(s);
+    if (leftPageIdx >= 0) keep.add(leftPageIdx);
+    if (rightPageIdx >= 0) keep.add(rightPageIdx);
+  }
+  contentState.pages.forEach((_, i) => { if (!keep.has(i)) unloadPdfPage(i); });
 }
 
 function renderPageStrip() {
@@ -366,34 +498,59 @@ function renderPageStrip() {
   if (!strip) return;
   strip.innerHTML = "";
   if (!contentState.pages.length) {
-    strip.classList.add("empty");
-    strip.textContent = "Drop images or PDF here to add pages";
+    strip.style.display = "none";
     updateSpreadNav();
     return;
   }
-  strip.classList.remove("empty");
+  strip.style.display = "";
   const THUMB_H = 56;
   contentState.pages.forEach((pg, i) => {
     const thumb = document.createElement("div");
     thumb.className = "strip-thumb";
-    const aspect = pg.srcCanvas.width / pg.srcCanvas.height;
     const tc = document.createElement("canvas");
     tc.height = THUMB_H;
-    tc.width  = Math.round(THUMB_H * aspect);
+    tc.width  = Math.round(THUMB_H * pg.aspectRatio);
     const tctx = tc.getContext("2d");
-    tctx.fillStyle = paperColor;
-    tctx.fillRect(0, 0, tc.width, tc.height);
-    tctx.globalCompositeOperation = contentBlendMode;
-    tctx.drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
+    if (pg.thumbnail) {
+      tctx.drawImage(pg.thumbnail, 0, 0, tc.width, tc.height);
+    } else {
+      tctx.fillStyle = paperColor;
+      tctx.fillRect(0, 0, tc.width, tc.height);
+    }
     const label = document.createElement("span");
     label.textContent = i + 1;
     thumb.append(tc, label);
-    thumb.addEventListener("click", () => {
+    thumb.addEventListener("click", e => {
       const targetSpread = Math.floor((i + 1) / 2);
       if (appMode === "content") {
-        contentState.editingPageIdx = i;
+        if (e.metaKey || e.ctrlKey) {
+          // Cmd+click: toggle this page in selection
+          if (contentState.selectedPageIdxs.has(i)) {
+            contentState.selectedPageIdxs.delete(i);
+            if (contentState.editingPageIdx === i) {
+              const last = [...contentState.selectedPageIdxs].pop();
+              if (last !== undefined) contentState.editingPageIdx = last;
+            }
+          } else {
+            contentState.selectedPageIdxs.add(i);
+            contentState.editingPageIdx = i;
+          }
+        } else if (e.shiftKey) {
+          // Shift+click: range from editing page to i
+          const from = Math.min(contentState.editingPageIdx, i);
+          const to   = Math.max(contentState.editingPageIdx, i);
+          for (let j = from; j <= to; j++) contentState.selectedPageIdxs.add(j);
+          contentState.editingPageIdx = i;
+        } else {
+          // Plain click: select only this page
+          contentState.editingPageIdx = i;
+          contentState.selectedPageIdxs = new Set([i]);
+          animateToSpread(targetSpread);
+        }
         syncPageUI();
+        updateSpreadNav();
         drawContent();
+        return;
       }
       animateToSpread(targetSpread);
     });
@@ -527,8 +684,22 @@ function _tickAnimations(now) {
   }
 }
 
+function selectSpreadPage(spreadIdx) {
+  if (appMode !== "content" || !contentState.pages.length) return;
+  const { leftPageIdx, rightPageIdx } = spreadPages(spreadIdx);
+  const pageIdx = leftPageIdx >= 0 ? leftPageIdx : rightPageIdx;
+  if (pageIdx < 0 || pageIdx >= contentState.pages.length) return;
+  contentState.editingPageIdx   = pageIdx;
+  contentState.selectedPageIdxs = new Set([pageIdx]);
+  syncPageUI();
+  updateSpreadNav();
+}
+
 function animateToSpread(targetSpread) {
   if (targetSpread === getEffectiveSpread()) return;
+
+  ensureSpreadLoaded(targetSpread);
+  selectSpreadPage(targetSpread);
 
   if (!lastVals || !contentState.pages.length) {
     contentState.spread = targetSpread;
@@ -652,8 +823,8 @@ function drawVdG(W, H) {
 
   function line(x1, y1, x2, y2) {
     ctx.beginPath();
-    ctx.moveTo(Math.round(x1), Math.round(y1));
-    ctx.lineTo(Math.round(x2), Math.round(y2));
+    ctx.moveTo(Math.round(x1) + 0.5, Math.round(y1) + 0.5);
+    ctx.lineTo(Math.round(x2) + 0.5, Math.round(y2) + 0.5);
     ctx.stroke();
   }
 
@@ -664,9 +835,8 @@ function drawVdG(W, H) {
   line(p1x, p1y, p1x, 0);  line(p2x, p2y, p2x, 0);
   line(p1x, 0,   p2x, p2y); line(p2x, 0,   p1x, p1y);
 
-  const r = (v) => Math.round(v);
-  ctx.strokeRect(r(2*W/9)+0.5, r(H/9)+0.5, r(2*W/3)-1, r(2*H/3)-1);
-  ctx.strokeRect(r(W+W/9)+0.5, r(H/9)+0.5, r(2*W/3)-1, r(2*H/3)-1);
+  snappedStrokeRect(2*W/9,   H/9, 2*W/3, 2*H/3);
+  snappedStrokeRect(W+W/9,   H/9, 2*W/3, 2*H/3);
   ctx.restore();
 }
 
@@ -808,13 +978,13 @@ function initLayoutListeners() {
 
   addListener("paper-color", "input", function () {
     applyPaperColor(this.value);
-    renderPageStrip();
+    regenerateAllThumbnails();
     draw();
   });
 
   addListener("content-blend", "change", function () {
     contentBlendMode = this.value;
-    renderPageStrip();
+    regenerateAllThumbnails();
     draw();
   });
 
@@ -919,7 +1089,13 @@ function applyTrimToPage(pg) {
   const slider    = document.getElementById("trim-slider");
   const tolerance = slider ? parseInt(slider.value, 10) : 15;
   pg.tolerance = tolerance;
-  pg.crop      = autoCrop(pg.srcCanvas, tolerance);
+  if (pg.srcCanvas) {
+    pg.crop            = autoCrop(pg.srcCanvas, tolerance);
+    pg.cropInitialized = true;
+    pg.gpuCanvas       = null;
+  } else {
+    pg.cropInitialized = false; // recompute on next load
+  }
   const valEl = document.getElementById("trim-val");
   if (valEl) valEl.textContent = tolerance;
 }
@@ -940,6 +1116,11 @@ function syncPageUI() {
       : "inside";
     fitAxisEl.disabled = !!pg.cover;
   }
+  const countEl = document.getElementById("selection-count");
+  if (countEl) {
+    const n = contentState.selectedPageIdxs.size;
+    countEl.textContent = n > 1 ? `${n} pages` : "";
+  }
 }
 
 function showTrimSection() { syncPageUI(); }
@@ -947,44 +1128,23 @@ function showTrimSection() { syncPageUI(); }
 function initContentListeners() {
   initDisplayControls(drawContent);
 
-  const dropTarget = document.getElementById("drop-target");
-  const filePick   = document.getElementById("file-pick");
-
-  addListener(dropTarget, "click", () => filePick.click());
-  addListener(dropTarget, "dragover", e => {
-    e.preventDefault();
-    dropTarget.classList.add("drag-over");
-  });
-  addListener(dropTarget, "dragleave", () => dropTarget.classList.remove("drag-over"));
-  addListener(dropTarget, "drop", e => {
-    e.preventDefault();
-    dropTarget.classList.remove("drag-over");
-    handleFiles(e.dataTransfer.files);
-  });
-  addListener(filePick, "change", () => handleFiles(filePick.files));
-
   addListener("trim-slider", "input", () => {
-    const pg = contentState.pages[contentState.editingPageIdx];
-    applyTrimToPage(pg);
+    for (const pg of getSelectedPages()) applyTrimToPage(pg);
     drawContent();
   });
 
   addListener("cover-check", "change", () => {
-    const pg = contentState.pages[contentState.editingPageIdx];
-    if (pg) {
-      pg.cover = document.getElementById("cover-check").checked;
-      syncPageUI();
-      drawContent();
-    }
+    const checked = document.getElementById("cover-check").checked;
+    for (const pg of getSelectedPages()) pg.cover = checked;
+    syncPageUI();
+    drawContent();
   });
 
   addListener("fit-axis", "change", () => {
-    const pg = contentState.pages[contentState.editingPageIdx];
-    if (pg) {
-      const value = document.getElementById("fit-axis").value;
-      pg.fitAxis = value === "width" || value === "height" ? value : "inside";
-      drawContent();
-    }
+    const value = document.getElementById("fit-axis").value;
+    const fitAxis = value === "width" || value === "height" ? value : "inside";
+    for (const pg of getSelectedPages()) pg.fitAxis = fitAxis;
+    drawContent();
   });
 }
 
@@ -1077,80 +1237,30 @@ function ensurePdfjs() {
   return pdfjsReady;
 }
 
-async function loadPDF(file) {
-  const lib = await ensurePdfjs();
-  const buf = await file.arrayBuffer();
-  const pdf = await lib.getDocument({ data: buf }).promise;
-  contentState.pages = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const vp   = page.getViewport({ scale: 2 });
-    const off  = document.createElement("canvas");
-    const offCtx = get2dContext(off, { willReadFrequently: true });
-    off.width  = vp.width;
-    off.height = vp.height;
-    await page.render({ canvasContext: offCtx, viewport: vp }).promise;
-    contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
-  }
-  contentState.spread         = 0;
-  contentState.editingPageIdx = 0;
-  contentState.hoverHandle    = null;
-  renderPageStrip();
-  showTrimSection();
-  drawContent();
-}
-
-async function loadImages(files) {
-  contentState.pages = [];
-  for (const file of files) {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
-    const off  = document.createElement("canvas");
-    const offCtx = get2dContext(off, { willReadFrequently: true });
-    off.width  = img.naturalWidth;
-    off.height = img.naturalHeight;
-    offCtx.drawImage(img, 0, 0);
-    URL.revokeObjectURL(url);
-    contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
-  }
-  contentState.spread         = 0;
-  contentState.editingPageIdx = 0;
-  contentState.hoverHandle    = null;
-  renderPageStrip();
-  showTrimSection();
-  drawContent();
-}
-
-async function handleFiles(files) {
-  const arr = Array.from(files);
-  if (!arr.length) return;
-  const isPDF = arr[0].type === "application/pdf" ||
-                arr[0].name.toLowerCase().endsWith(".pdf");
-  if (isPDF) await loadPDF(arr[0]);
-  else       await loadImages(arr);
-}
 
 
 // ── Content mode: canvas rendering ───────────────────────────────────────────
 
 function drawCropHandles(r, hoverEdge = null) {
   if (!r) return;
-  const x = Math.round(r.x), y = Math.round(r.y);
-  const w = Math.round(r.w), h = Math.round(r.h);
   const T = CROP_HANDLE_THICK, L = CROP_HANDLE_LEN;
 
   // Solid content-rect border
   ctx.save();
   ctx.strokeStyle = "#000";
   ctx.lineWidth   = 1;
-  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  snappedStrokeRect(r.x, r.y, r.w, r.h);
+
+  // Snap corners once so all handle positions derive from the same integers
+  const x = Math.round(r.x), y = Math.round(r.y);
+  const x1 = Math.round(r.x + r.w), y1 = Math.round(r.y + r.h);
+  const w = x1 - x, h = y1 - y;
 
   const handles = [
-    { edge: "top",    hx: Math.round(x + w/2 - L/2), hy: Math.round(y - T/2),     hw: L, hh: T, axis: "h" },
-    { edge: "bottom", hx: Math.round(x + w/2 - L/2), hy: Math.round(y+h - T/2),   hw: L, hh: T, axis: "h" },
-    { edge: "left",   hx: Math.round(x - T/2),        hy: Math.round(y + h/2-L/2), hw: T, hh: L, axis: "v" },
-    { edge: "right",  hx: Math.round(x+w - T/2),      hy: Math.round(y + h/2-L/2), hw: T, hh: L, axis: "v" },
+    { edge: "top",    hx: Math.round(x + w/2 - L/2), hy: Math.round(y - T/2),   hw: L, hh: T, axis: "h" },
+    { edge: "bottom", hx: Math.round(x + w/2 - L/2), hy: Math.round(y1 - T/2),  hw: L, hh: T, axis: "h" },
+    { edge: "left",   hx: Math.round(x - T/2),        hy: Math.round(y + h/2 - L/2), hw: T, hh: L, axis: "v" },
+    { edge: "right",  hx: Math.round(x1 - T/2),       hy: Math.round(y + h/2 - L/2), hw: T, hh: L, axis: "v" },
   ];
 
   for (const { edge, hx, hy, hw, hh, axis } of handles) {
@@ -1210,6 +1320,7 @@ function drawContent() {
   }
 
   contentState.spread = Math.min(contentState.spread, numSpreads() - 1);
+  if (contentState.spread !== _lastEnsuredSpread) ensureSpreadLoaded(contentState.spread);
   const { metrics, sides } = paintSpread(canvas, scale, vals, {
     pageFills: getSpreadFills(contentState.spread),
     showMarginOverlay: false,
@@ -1343,12 +1454,11 @@ canvas.addEventListener("mousedown", e => {
   const { side, rect: sideRect } = spreadHit;
   const pageIdx = sideRect.pageIndex;
 
-  if (contentState.editingPageIdx !== pageIdx) {
-    contentState.editingPageIdx = pageIdx;
+  if (contentState.editingPageIdx !== pageIdx || contentState.selectedPageIdxs.size > 1) {
+    contentState.editingPageIdx   = pageIdx;
+    contentState.selectedPageIdxs = new Set([pageIdx]);
     syncPageUI();
-    document.querySelectorAll(".page-thumb").forEach((el, j) =>
-      el.classList.toggle("active", j === pageIdx)
-    );
+    updateSpreadNav();
     drawContent();
   }
 
@@ -1431,15 +1541,18 @@ async function appendFiles(files) {
     const lib = await ensurePdfjs();
     const buf = await arr[0].arrayBuffer();
     const pdf = await lib.getDocument({ data: buf }).promise;
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const vp   = page.getViewport({ scale: 2 });
-      const off  = document.createElement("canvas");
-      const offCtx = get2dContext(off, { willReadFrequently: true });
-      off.width = vp.width; off.height = vp.height;
-      await page.render({ canvasContext: offCtx, viewport: vp }).promise;
-      contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
-    }
+    // Keep whichever pdfDoc was loaded most recently
+    contentState.pdfDoc = pdf;
+    const startIdx = contentState.pages.length;
+    const dims = await Promise.all(
+      Array.from({ length: pdf.numPages }, (_, i) =>
+        pdf.getPage(i + 1).then(p => { const vp = p.getViewport({ scale: 1 }); return vp.width / vp.height; })
+      )
+    );
+    for (let i = 0; i < pdf.numPages; i++)
+      contentState.pages.push(makePdfPageDescriptor(i + 1, dims[i]));
+    renderPageStrip();
+    ensureSpreadLoaded(Math.floor((startIdx + 1) / 2));
   } else {
     for (const file of arr) {
       const url = URL.createObjectURL(file);
@@ -1450,17 +1563,25 @@ async function appendFiles(files) {
       off.width = img.naturalWidth; off.height = img.naturalHeight;
       offCtx.drawImage(img, 0, 0);
       URL.revokeObjectURL(url);
-      contentState.pages.push({ srcCanvas: off, crop: autoCrop(off, 15), tolerance: 15, cover: false, fitAxis: "inside" });
+      const pg = { pageNum: null, aspectRatio: off.width / off.height,
+                   srcCanvas: off, loading: false,
+                   crop: autoCrop(off, 15), cropInitialized: true,
+                   tolerance: 15, cover: false, fitAxis: "inside", thumbnail: null };
+      generateThumbnail(pg);
+      contentState.pages.push(pg);
     }
   }
 
-  contentState.editingPageIdx = contentState.pages.length - 1;
-  if (appMode !== "content") switchMode("content");
-  else {
-    renderPageStrip();
-    showTrimSection();
-    drawContent();
-  }
+  contentState.spread           = 0;
+  contentState.editingPageIdx   = 0;
+  contentState.selectedPageIdxs = new Set([0]);
+  renderPageStrip();
+  showTrimSection();
+  if (appMode === "layout") draw(); else drawContent();
+  ensureSpreadLoaded(0);
+  const strip = document.getElementById("page-strip");
+  if (strip) { strip.scrollLeft = 0; }
+  updateSpreadNav();
 }
 
 // ── Resize observer ───────────────────────────────────────────────────────────
@@ -1474,27 +1595,40 @@ ro.observe(canvasArea);
 
 // ── Global init ───────────────────────────────────────────────────────────────
 
-// Page strip drop zone (always-on, works in either mode)
-{
-  const strip = document.getElementById("page-strip");
-  strip.addEventListener("dragover", e => { e.preventDefault(); strip.classList.add("drag-over"); });
-  strip.addEventListener("dragleave", e => { if (!strip.contains(e.relatedTarget)) strip.classList.remove("drag-over"); });
-  strip.addEventListener("drop", e => {
-    e.preventDefault();
-    strip.classList.remove("drag-over");
-    appendFiles(e.dataTransfer.files);
-  });
-}
+// Window-level drop zone — replaces current document
+document.addEventListener("dragover", e => e.preventDefault());
+document.addEventListener("drop", e => {
+  e.preventDefault();
+  appendFiles(e.dataTransfer.files);
+});
 
-// Arrow key spread navigation
+// Arrow key spread navigation + Cmd+A select-all
 document.addEventListener("keydown", e => {
   if (e.target.matches("input, select, textarea")) return;
-  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
   const base = getEffectiveSpread();
   const max  = numSpreads() - 1;
   if (e.key === "ArrowLeft"  && base > 0)   animateToSpread(base - 1);
   if (e.key === "ArrowRight" && base < max) animateToSpread(base + 1);
+  if ((e.metaKey || e.ctrlKey) && e.key === "a" && appMode === "content" && contentState.pages.length) {
+    e.preventDefault();
+    contentState.selectedPageIdxs = new Set(contentState.pages.map((_, i) => i));
+    syncPageUI();
+    updateSpreadNav();
+  }
 });
+
+// Scroll wheel spread navigation
+let _lastWheelFlip = 0;
+canvasArea.addEventListener("wheel", e => {
+  if (!contentState.pages.length) return;
+  const now = performance.now();
+  if (now - _lastWheelFlip < 400) return;
+  _lastWheelFlip = now;
+  const base = getEffectiveSpread();
+  const max  = numSpreads() - 1;
+  if (e.deltaY > 0 && base < max) animateToSpread(base + 1);
+  if (e.deltaY < 0 && base > 0)  animateToSpread(base - 1);
+}, { passive: true });
 
 // Mode tabs
 document.querySelectorAll(".mode-tab").forEach(btn =>
