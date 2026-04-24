@@ -163,7 +163,7 @@
     </div>
     <input type="range" id="trim-slider" min="0" max="255" step="1" value="15">
     <div class="slider-ends"><span>none</span><span>max</span></div>
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:10px">
+    <label class="content-toggle">
       <input type="checkbox" id="cover-check">
       <span style="font-size:11px">Cover / full bleed</span>
     </label>
@@ -174,6 +174,38 @@
         <option value="height">match height</option>
         <option value="width">match width</option>
       </select>
+    </div>
+    <div id="bw-header" style="margin-top:12px">
+      <span class="section-label" style="margin:0">Black &amp; white</span>
+      <span id="bw-val"></span>
+    </div>
+    <input type="range" id="bw-slider" min="0" max="100" step="1" value="0">
+    <div class="slider-ends"><span>color</span><span>all gray</span></div>
+    <div id="neutralize-header" style="margin-top:12px">
+      <span class="section-label" style="margin:0">Paper neutralize</span>
+      <span id="neutralize-val">none</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <button id="neutralize-clear" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:1px solid #000;padding:2px 6px;cursor:pointer">Clear</button>
+      <input type="color" id="neutralize-color" value="#ffffff">
+    </div>
+    <div id="levels-header" style="margin-top:12px">
+      <span class="section-label" style="margin:0">Levels</span>
+    </div>
+    <div class="dim-row" style="align-items:center">
+      <label>black</label>
+      <input type="range" id="levels-black" min="0" max="254" step="1" value="0">
+      <span class="unit" id="levels-black-val">0</span>
+    </div>
+    <div class="dim-row" style="align-items:center">
+      <label>gray</label>
+      <input type="range" id="levels-gray" min="1" max="254" step="1" value="128">
+      <span class="unit" id="levels-gray-val">128</span>
+    </div>
+    <div class="dim-row" style="align-items:center;margin-bottom:0">
+      <label>white</label>
+      <input type="range" id="levels-white" min="1" max="255" step="1" value="255">
+      <span class="unit" id="levels-white-val">255</span>
     </div>
   </div>
 

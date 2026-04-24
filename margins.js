@@ -29,7 +29,7 @@ const renderState   = {
 // ── Content state ─────────────────────────────────────────────────────────────
 
 const contentState = {
-  pages:              [],  // [{ pageNum, aspectRatio, srcCanvas, loading, cropInitialized, crop, tolerance, cover, fitAxis, thumbnail }]
+  pages:              [],  // [{ pageNum, aspectRatio, srcCanvas, loading, cropInitialized, crop, tolerance, cover, fitAxis, effects, renderCache, thumbnail }]
   pdfDoc:             null,
   spread:             0,
   editingPageIdx:     0,
@@ -43,6 +43,108 @@ function getSelectedPages() {
   const sel = contentState.selectedPageIdxs;
   if (!sel.size) return [contentState.pages[contentState.editingPageIdx]].filter(Boolean);
   return [...sel].map(i => contentState.pages[i]).filter(Boolean);
+}
+
+function makeDefaultPageEffects() {
+  return {
+    bwThreshold: 0,
+    neutralizeColor: null,
+    levelsBlack: 0,
+    levelsGray: 128,
+    levelsWhite: 255,
+  };
+}
+
+function getPageEffectState(pg) {
+  if (!pg.effects) pg.effects = makeDefaultPageEffects();
+  return pg.effects;
+}
+
+function getPageEffectKey(pg) {
+  const {
+    bwThreshold = 0,
+    neutralizeColor = null,
+    levelsBlack = 0,
+    levelsGray = 128,
+    levelsWhite = 255,
+  } = getPageEffectState(pg);
+  const levels = normalizeLevels(levelsBlack, levelsGray, levelsWhite);
+  return `neutralize:${neutralizeColor || "none"}|levels:${levels.black},${levels.gray.toFixed(2)},${levels.white}|bw:${bwThreshold}`;
+}
+
+function invalidatePageRenderCache(pg, { keepThumbnail = false } = {}) {
+  if (!pg) return;
+  pg.renderCache = { effectKey: "", canvas: null };
+  if (!keepThumbnail) pg.thumbnail = null;
+}
+
+function refreshSelectedThumbnails() {
+  for (const pg of getSelectedPages()) {
+    if (pg?.srcCanvas) generateThumbnail(pg);
+  }
+  renderPageStrip();
+}
+
+let effectPreviewTimer = 0;
+
+function scheduleEffectPreviewDraw() {
+  if (effectPreviewTimer) clearTimeout(effectPreviewTimer);
+  effectPreviewTimer = setTimeout(() => {
+    effectPreviewTimer = 0;
+    drawContent();
+  }, 40);
+}
+
+function flushEffectPreviewDraw() {
+  if (effectPreviewTimer) {
+    clearTimeout(effectPreviewTimer);
+    effectPreviewTimer = 0;
+  }
+  drawContent();
+}
+
+function normalizeHexColor(hex) {
+  return typeof hex === "string" && /^#[0-9a-fA-F]{6}$/.test(hex) ? hex.toLowerCase() : null;
+}
+
+function hexToRgb(hex) {
+  const normalized = normalizeHexColor(hex);
+  if (!normalized) return null;
+  return {
+    r: parseInt(normalized.slice(1, 3), 16),
+    g: parseInt(normalized.slice(3, 5), 16),
+    b: parseInt(normalized.slice(5, 7), 16),
+  };
+}
+
+function normalizeLevels(blackPoint, grayPoint, whitePoint) {
+  const black = Math.max(0, Math.min(254, Math.round(Number.isFinite(blackPoint) ? blackPoint : 0)));
+  const white = Math.max(1, Math.min(255, Math.round(Number.isFinite(whitePoint) ? whitePoint : 255)));
+  const safeBlack = Math.min(black, 254);
+  const safeWhite = Math.min(255, Math.max(safeBlack + 1, white));
+  let gray = Number.isFinite(grayPoint) ? grayPoint : 128;
+
+  if (gray >= 0.1 && gray <= 4) {
+    const midRatio = Math.pow(0.5, 1 / Math.max(0.1, gray));
+    gray = safeBlack + midRatio * (safeWhite - safeBlack);
+  }
+
+  gray = Math.round(gray);
+  gray = Math.max(safeBlack + 1, Math.min(safeWhite - 1, gray));
+
+  if (black < white) return { black, gray, white };
+  return {
+    black: Math.max(0, safeWhite - 1),
+    gray,
+    white: safeWhite,
+  };
+}
+
+function applyLevelsChannel(value, blackPoint, grayPoint, whitePoint) {
+  const normalized = Math.max(0, Math.min(1, (value - blackPoint) / (whitePoint - blackPoint)));
+  const midpoint = Math.max(0.01, Math.min(0.99, (grayPoint - blackPoint) / (whitePoint - blackPoint)));
+  const gamma = Math.log(0.5) / Math.log(midpoint);
+  return Math.round(Math.pow(normalized, gamma) * 255);
 }
 
 // ── Listener registry ─────────────────────────────────────────────────────────
@@ -129,7 +231,8 @@ function getSpreadMetrics(vals, scale) {
 function drawPageContent(pg, x, y, w, h, opts = {}) {
   if (!pg || !pg.srcCanvas) return null;
   const { mode = "fit", clipToRect = false } = opts;
-  const { srcCanvas, crop } = pg;
+  const srcCanvas = getProcessedCanvas(pg);
+  const { crop } = pg;
   const sw = srcCanvas.width  - crop.left - crop.right;
   const sh = srcCanvas.height - crop.top  - crop.bottom;
   if (sw <= 0 || sh <= 0) return null;
@@ -397,8 +500,85 @@ function makePdfPageDescriptor(pageNum, aspectRatio) {
     crop: { top: 0, left: 0, right: 0, bottom: 0 },
     cropInitialized: false,
     tolerance: 15, cover: false, fitAxis: "inside",
+    effects: makeDefaultPageEffects(),
+    renderCache: { effectKey: "", canvas: null },
     thumbnail: null,
   };
+}
+
+function getProcessedCanvas(pg) {
+  if (!pg?.srcCanvas) return null;
+
+  const effectKey = getPageEffectKey(pg);
+  if (pg.renderCache?.canvas && pg.renderCache.effectKey === effectKey) return pg.renderCache.canvas;
+
+  const srcCanvas = pg.srcCanvas;
+  const {
+    bwThreshold = 0,
+    neutralizeColor = null,
+    levelsBlack = 0,
+    levelsGray = 128,
+    levelsWhite = 255,
+  } = getPageEffectState(pg);
+  const levels = normalizeLevels(levelsBlack, levelsGray, levelsWhite);
+  const neutralizeRgb = hexToRgb(neutralizeColor);
+  const hasNeutralizer = !!neutralizeRgb && (neutralizeRgb.r !== 255 || neutralizeRgb.g !== 255 || neutralizeRgb.b !== 255);
+  const hasLevels = levels.black !== 0 || levels.gray !== 128 || levels.white !== 255;
+  if (bwThreshold <= 0 && !hasNeutralizer && !hasLevels) {
+    pg.renderCache = { effectKey, canvas: srcCanvas };
+    return srcCanvas;
+  }
+
+  const out = document.createElement("canvas");
+  out.width = srcCanvas.width;
+  out.height = srcCanvas.height;
+
+  const srcCtx = get2dContext(srcCanvas, { willReadFrequently: true });
+  const outCtx = get2dContext(out, { willReadFrequently: true });
+  const imageData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
+  const { data } = imageData;
+  const threshold = bwThreshold / 100;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const sourceR = data[i];
+    const sourceG = data[i + 1];
+    const sourceB = data[i + 2];
+    const max = Math.max(sourceR, sourceG, sourceB);
+    const min = Math.min(sourceR, sourceG, sourceB);
+    const delta = max - min;
+    const saturation = max === 0 ? 0 : delta / max;
+
+    let r = sourceR;
+    let g = sourceG;
+    let b = sourceB;
+
+    if (hasNeutralizer) {
+      r = Math.min(255, Math.round(r * 255 / Math.max(1, neutralizeRgb.r)));
+      g = Math.min(255, Math.round(g * 255 / Math.max(1, neutralizeRgb.g)));
+      b = Math.min(255, Math.round(b * 255 / Math.max(1, neutralizeRgb.b)));
+    }
+
+    if (hasLevels) {
+      r = applyLevelsChannel(r, levels.black, levels.gray, levels.white);
+      g = applyLevelsChannel(g, levels.black, levels.gray, levels.white);
+      b = applyLevelsChannel(b, levels.black, levels.gray, levels.white);
+    }
+
+    if (saturation <= threshold) {
+      const gray = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+      r = gray;
+      g = gray;
+      b = gray;
+    }
+
+    data[i] = r;
+    data[i + 1] = g;
+    data[i + 2] = b;
+  }
+
+  outCtx.putImageData(imageData, 0, 0);
+  pg.renderCache = { effectKey, canvas: out };
+  return out;
 }
 
 function generateThumbnail(pg) {
@@ -411,7 +591,7 @@ function generateThumbnail(pg) {
   tctx.fillStyle = paperColor;
   tctx.fillRect(0, 0, tc.width, tc.height);
   tctx.globalCompositeOperation = contentBlendMode;
-  tctx.drawImage(pg.srcCanvas, 0, 0, tc.width, tc.height);
+  tctx.drawImage(getProcessedCanvas(pg), 0, 0, tc.width, tc.height);
   pg.thumbnail = tc;
 }
 
@@ -432,10 +612,14 @@ async function renderPdfPage(pageIdx) {
     const vp   = page.getViewport({ scale: 2 });
     const off  = document.createElement("canvas");
     off.width  = vp.width; off.height = vp.height;
-    await page.render({ canvasContext: get2dContext(off, { willReadFrequently: true }), viewport: vp }).promise;
+    await page.render({
+      canvasContext: get2dContext(off, { willReadFrequently: true }),
+      viewport: vp,
+    }).promise;
     pg.srcCanvas    = off;
     pg.aspectRatio  = off.width / off.height;
     pg.loading      = false;
+    invalidatePageRenderCache(pg);
     if (!pg.cropInitialized) {
       pg.crop            = autoCrop(off, pg.tolerance);
       pg.cropInitialized = true;
@@ -462,6 +646,7 @@ async function renderPdfPage(pageIdx) {
     }
   } catch (e) {
     pg.loading = false;
+    console.error(`Failed to render PDF page ${pg.pageNum}:`, e);
   }
 }
 
@@ -469,7 +654,7 @@ function unloadPdfPage(pageIdx) {
   const pg = contentState.pages[pageIdx];
   if (!pg || !pg.srcCanvas || !pg.pageNum) return; // never unload image pages
   pg.srcCanvas = null;
-  pg.gpuCanvas = null;
+  invalidatePageRenderCache(pg, { keepThumbnail: true });
 }
 
 let _lastEnsuredSpread = -1;
@@ -1084,6 +1269,37 @@ function setTrimUI(tolerance) {
   if (valEl)  valEl.textContent = tolerance;
 }
 
+function setBwUI(threshold) {
+  const slider = document.getElementById("bw-slider");
+  const valEl  = document.getElementById("bw-val");
+  if (slider) slider.value = threshold;
+  if (valEl) valEl.textContent = `${threshold}% sat`;
+}
+
+function setNeutralizeUI(color) {
+  const normalized = normalizeHexColor(color);
+  const colorEl = document.getElementById("neutralize-color");
+  const valEl = document.getElementById("neutralize-val");
+  if (colorEl) colorEl.value = normalized || "#ffffff";
+  if (valEl) valEl.textContent = normalized || "none";
+}
+
+function setLevelsUI({ black = 0, gray = 128, white = 255 } = {}) {
+  const levels = normalizeLevels(black, gray, white);
+  const blackEl = document.getElementById("levels-black");
+  const grayEl = document.getElementById("levels-gray");
+  const whiteEl = document.getElementById("levels-white");
+  const blackValEl = document.getElementById("levels-black-val");
+  const grayValEl = document.getElementById("levels-gray-val");
+  const whiteValEl = document.getElementById("levels-white-val");
+  if (blackEl) blackEl.value = levels.black;
+  if (grayEl) grayEl.value = levels.gray;
+  if (whiteEl) whiteEl.value = levels.white;
+  if (blackValEl) blackValEl.textContent = String(levels.black);
+  if (grayValEl) grayValEl.textContent = String(levels.gray);
+  if (whiteValEl) whiteValEl.textContent = String(levels.white);
+}
+
 function applyTrimToPage(pg) {
   if (!pg) return;
   const slider    = document.getElementById("trim-slider");
@@ -1092,12 +1308,34 @@ function applyTrimToPage(pg) {
   if (pg.srcCanvas) {
     pg.crop            = autoCrop(pg.srcCanvas, tolerance);
     pg.cropInitialized = true;
-    pg.gpuCanvas       = null;
   } else {
     pg.cropInitialized = false; // recompute on next load
   }
   const valEl = document.getElementById("trim-val");
   if (valEl) valEl.textContent = tolerance;
+}
+
+function applyBwToPage(pg) {
+  if (!pg) return;
+  const slider = document.getElementById("bw-slider");
+  const threshold = slider ? parseInt(slider.value, 10) : 0;
+  getPageEffectState(pg).bwThreshold = Math.max(0, Math.min(100, threshold || 0));
+  invalidatePageRenderCache(pg, { keepThumbnail: true });
+}
+
+function applyNeutralizeColorToPage(pg, color) {
+  if (!pg) return;
+  getPageEffectState(pg).neutralizeColor = normalizeHexColor(color);
+  invalidatePageRenderCache(pg, { keepThumbnail: true });
+}
+
+function applyLevelsToPage(pg, levels) {
+  if (!pg) return;
+  const effectState = getPageEffectState(pg);
+  effectState.levelsBlack = levels.black;
+  effectState.levelsGray = levels.gray;
+  effectState.levelsWhite = levels.white;
+  invalidatePageRenderCache(pg, { keepThumbnail: true });
 }
 
 // Sync all per-page sidebar controls to the currently editing page
@@ -1107,6 +1345,14 @@ function syncPageUI() {
   const pg = contentState.pages[contentState.editingPageIdx];
   if (!pg) return;
   setTrimUI(pg.tolerance);
+  const effects = getPageEffectState(pg);
+  setBwUI(effects.bwThreshold);
+  setNeutralizeUI(effects.neutralizeColor);
+  setLevelsUI({
+    black: effects.levelsBlack,
+    gray: effects.levelsGray,
+    white: effects.levelsWhite,
+  });
   const coverEl = document.getElementById("cover-check");
   if (coverEl) coverEl.checked = pg.cover;
   const fitAxisEl = document.getElementById("fit-axis");
@@ -1133,6 +1379,71 @@ function initContentListeners() {
     drawContent();
   });
 
+  addListener("bw-slider", "input", () => {
+    for (const pg of getSelectedPages()) applyBwToPage(pg);
+    scheduleEffectPreviewDraw();
+  });
+  addListener("bw-slider", "change", () => {
+    refreshSelectedThumbnails();
+    flushEffectPreviewDraw();
+  });
+
+  addListener("neutralize-clear", "click", () => {
+    for (const pg of getSelectedPages()) applyNeutralizeColorToPage(pg, null);
+    syncPageUI();
+    refreshSelectedThumbnails();
+    drawContent();
+  });
+
+  addListener("neutralize-color", "input", () => {
+    const color = document.getElementById("neutralize-color").value;
+    for (const pg of getSelectedPages()) applyNeutralizeColorToPage(pg, color);
+    syncPageUI();
+    scheduleEffectPreviewDraw();
+  });
+  addListener("neutralize-color", "change", () => {
+    refreshSelectedThumbnails();
+    flushEffectPreviewDraw();
+  });
+
+  function applyLevelsFromUI(changedId) {
+    const blackInput = document.getElementById("levels-black");
+    const grayInput = document.getElementById("levels-gray");
+    const whiteInput = document.getElementById("levels-white");
+    let black = blackInput ? parseInt(blackInput.value, 10) : 0;
+    let gray = grayInput ? parseInt(grayInput.value, 10) : 128;
+    let white = whiteInput ? parseInt(whiteInput.value, 10) : 255;
+
+    if (black >= white) {
+      if (changedId === "levels-white") black = Math.max(0, white - 1);
+      else white = Math.min(255, black + 1);
+    }
+
+    if (gray <= black) gray = black + 1;
+    if (gray >= white) gray = white - 1;
+
+    const levels = normalizeLevels(black, gray, white);
+    setLevelsUI(levels);
+    for (const pg of getSelectedPages()) applyLevelsToPage(pg, levels);
+    scheduleEffectPreviewDraw();
+  }
+
+  addListener("levels-black", "input", () => { applyLevelsFromUI("levels-black"); });
+  addListener("levels-gray", "input", () => { applyLevelsFromUI("levels-gray"); });
+  addListener("levels-white", "input", () => { applyLevelsFromUI("levels-white"); });
+  addListener("levels-black", "change", () => {
+    refreshSelectedThumbnails();
+    flushEffectPreviewDraw();
+  });
+  addListener("levels-gray", "change", () => {
+    refreshSelectedThumbnails();
+    flushEffectPreviewDraw();
+  });
+  addListener("levels-white", "change", () => {
+    refreshSelectedThumbnails();
+    flushEffectPreviewDraw();
+  });
+
   addListener("cover-check", "change", () => {
     const checked = document.getElementById("cover-check").checked;
     for (const pg of getSelectedPages()) pg.cover = checked;
@@ -1152,6 +1463,10 @@ function switchMode(mode) {
   if (mode === appMode) return;
 
   stopSpreadAnimation();
+  if (effectPreviewTimer) {
+    clearTimeout(effectPreviewTimer);
+    effectPreviewTimer = 0;
+  }
   if (appMode === "layout") saveMarginState();
   clearListeners();
   appMode    = mode;
@@ -1167,11 +1482,13 @@ function switchMode(mode) {
   htmx.process(toolbar);
 
   if (mode === "layout") {
+    setCanvasCursor("default");
     restoreMarginState();
     initLayoutListeners();
     draw();
   } else {
     contentState.hoverHandle = null;
+    setCanvasCursor("default");
     initContentListeners();
     if (contentState.pages.length) showTrimSection();
     drawContent();
@@ -1224,13 +1541,27 @@ let pdfjsReady = null;
 function ensurePdfjs() {
   if (pdfjsReady) return pdfjsReady;
   pdfjsReady = new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js";
-    s.onload = () => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js";
-      resolve(window.pdfjsLib);
+    const readyKey = `__pdfjsReady${Math.random().toString(36).slice(2)}`;
+    const errorKey = `__pdfjsError${Math.random().toString(36).slice(2)}`;
+    globalThis[readyKey] = lib => {
+      delete globalThis[readyKey];
+      delete globalThis[errorKey];
+      lib.GlobalWorkerOptions.workerSrc =
+        "https://unpkg.com/pdfjs-dist@5.6.205/build/pdf.worker.mjs";
+      resolve(lib);
     };
+    globalThis[errorKey] = message => {
+      delete globalThis[readyKey];
+      delete globalThis[errorKey];
+      reject(new Error(message));
+    };
+    const s = document.createElement("script");
+    s.type = "module";
+    s.textContent = `
+      import("https://unpkg.com/pdfjs-dist@5.6.205/build/pdf.mjs")
+        .then((lib) => globalThis["${readyKey}"](lib))
+        .catch((error) => globalThis["${errorKey}"](error?.message || "Failed to load PDF.js"));
+    `;
     s.onerror = () => reject(new Error("Failed to load PDF.js"));
     document.head.appendChild(s);
   });
@@ -1566,7 +1897,10 @@ async function appendFiles(files) {
       const pg = { pageNum: null, aspectRatio: off.width / off.height,
                    srcCanvas: off, loading: false,
                    crop: autoCrop(off, 15), cropInitialized: true,
-                   tolerance: 15, cover: false, fitAxis: "inside", thumbnail: null };
+                   tolerance: 15, cover: false, fitAxis: "inside",
+                   effects: makeDefaultPageEffects(),
+                   renderCache: { effectKey: "", canvas: null },
+                   thumbnail: null };
       generateThumbnail(pg);
       contentState.pages.push(pg);
     }
