@@ -25,7 +25,7 @@ export class Page {
     aspectRatio = 1,
     crop = null,
     cropInitialized = false,
-    tolerance = 15,
+    tolerance = 128,
     cover = false,
     fitAxis = "inside",
     effects = null,

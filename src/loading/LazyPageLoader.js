@@ -1,4 +1,5 @@
 import { autoCrop } from "../effects/cpu.js";
+import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { renderPdfPage } from "./pdfLoader.js";
 
 export class LazyPageLoader {
@@ -54,7 +55,7 @@ export class LazyPageLoader {
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
       if (!page.cropInitialized) {
-        page.crop = autoCrop(canvas, page.tolerance);
+        page.crop = autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance);
         page.cropInitialized = true;
       }
       this.onPageReady?.(pageIndex);

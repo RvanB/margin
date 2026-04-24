@@ -1,7 +1,7 @@
 import { Book } from "../model/Book.js";
 import { Page, makeDefaultPageEffects, normalizeFitAxis } from "../model/Page.js";
 import { autoCrop, normalizeHexColor, normalizeLevels } from "../effects/cpu.js";
-import { buildPipeline, effectKey } from "../effects/pipeline.js";
+import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
 import { loadImageFile } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
 import { loadPdfDocument } from "../loading/pdfLoader.js";
@@ -45,6 +45,7 @@ export class App {
     this.wheelDeltaRemainder = 0;
     this.listeners = [];
     this.dragHandle = null;
+    this.contentEffectCaches = new WeakMap();
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
@@ -110,6 +111,9 @@ export class App {
     return {
       pipeline: buildPipeline(page.effects),
       key: effectKey(page.effects),
+      effects: page.effects,
+      gpu: buildGpuEffectConfig(page.effects),
+      layerCache: this.uiState.appMode === "content" ? this.getContentEffectLayerCache(page) : null,
     };
   }
 
@@ -536,10 +540,18 @@ export class App {
 
   applyTrimToPage(page) {
     if (!page) return;
-    const tolerance = parseInt(document.getElementById("trim-slider")?.value, 10) || 15;
+    const tolerance = parseInt(document.getElementById("trim-slider")?.value, 10);
     page.tolerance = tolerance;
     if (page.srcCanvas) {
-      page.crop = autoCrop(page.srcCanvas, tolerance);
+      page.crop = autoCrop(
+        applyEffectsToCanvas(
+          page.srcCanvas,
+          page.effects,
+          this.getContentEffectLayerCache(page),
+          `${page.srcCanvas.width}x${page.srcCanvas.height}`
+        ),
+        tolerance
+      );
       page.cropInitialized = true;
     } else {
       page.cropInitialized = false;
@@ -566,6 +578,18 @@ export class App {
     page.effects.levelsGray = levels.gray;
     page.effects.levelsWhite = levels.white;
     this.pageStrip.invalidateThumbnail(page);
+  }
+
+  getContentEffectLayerCache(page) {
+    let cached = this.contentEffectCaches.get(page);
+    if (!cached || cached.srcCanvas !== page.srcCanvas) {
+      cached = {
+        srcCanvas: page.srcCanvas,
+        variants: new Map(),
+      };
+      this.contentEffectCaches.set(page, cached);
+    }
+    return cached.variants;
   }
 
   handlePageStripClick(pageIndex, event) {
@@ -631,6 +655,8 @@ export class App {
       this.uiState.effectiveSpread = clampedTarget;
       this.animationDirection = 0;
       this.spreadRenderer.stopAnimation();
+      this.animationCompletionScheduled = false;
+      this.overlayCanvas.style.visibility = "";
       this.redraw();
       return;
     }
@@ -787,16 +813,19 @@ export class App {
         source: { type: "image", file },
         srcCanvas: canvas,
         aspectRatio: canvas.width / canvas.height,
-        crop: autoCrop(canvas, 15),
+        crop: autoCrop(applyEffectsToCanvas(canvas, makeDefaultPageEffects()), 128),
         cropInitialized: true,
-        tolerance: 15,
+        tolerance: 128,
         effects: makeDefaultPageEffects(),
       }));
     }
 
     this.lazyPageLoader.reset();
+    this.spreadRenderer.stopAnimation();
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
+    this.contentEffectCaches = new WeakMap();
+    this.overlayCanvas.style.visibility = "";
     this.uiState.currentSpread = 0;
     this.uiState.effectiveSpread = 0;
     this.uiState.editingPageIdx = 0;
@@ -824,6 +853,7 @@ export class App {
     this.spreadRenderer.stopAnimation();
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
+    this.contentEffectCaches = new WeakMap();
     this.overlayCanvas.style.visibility = "";
     this.clearListeners();
     this.uiState.appMode = mode;

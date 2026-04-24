@@ -54,6 +54,12 @@ function applyLevelsChannel(value, blackPoint, grayPoint, whitePoint) {
   return Math.round(Math.pow(normalized, gamma) * 255);
 }
 
+function getSaturation(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max === 0 ? 0 : (max - min) / max;
+}
+
 export function bwEffect(threshold) {
   const safeThreshold = Math.max(0, Math.min(100, Math.round(Number.isFinite(threshold) ? threshold : 0)));
   if (safeThreshold <= 0) return null;
@@ -69,9 +75,7 @@ export function bwEffect(threshold) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const saturation = max === 0 ? 0 : (max - min) / max;
+      const saturation = getSaturation(r, g, b);
 
       if (saturation <= saturationThreshold) {
         const gray = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
@@ -86,9 +90,11 @@ export function bwEffect(threshold) {
   };
 }
 
-export function levelsEffect(blackPoint, grayPoint, whitePoint) {
+export function levelsEffect(blackPoint, grayPoint, whitePoint, threshold = 100) {
   const levels = normalizeLevels(blackPoint, grayPoint, whitePoint);
+  const safeThreshold = Math.max(0, Math.min(100, Math.round(Number.isFinite(threshold) ? threshold : 100)));
   if (levels.black === 0 && levels.gray === 128 && levels.white === 255) return null;
+  const saturationThreshold = safeThreshold / 100;
 
   return canvas => {
     const out = cloneCanvas(canvas);
@@ -97,6 +103,8 @@ export function levelsEffect(blackPoint, grayPoint, whitePoint) {
     const { data } = imageData;
 
     for (let i = 0; i < data.length; i += 4) {
+      const saturation = getSaturation(data[i], data[i + 1], data[i + 2]);
+      if (saturation > saturationThreshold) continue;
       data[i] = applyLevelsChannel(data[i], levels.black, levels.gray, levels.white);
       data[i + 1] = applyLevelsChannel(data[i + 1], levels.black, levels.gray, levels.white);
       data[i + 2] = applyLevelsChannel(data[i + 2], levels.black, levels.gray, levels.white);
@@ -133,7 +141,7 @@ export function neutralizeEffect(hexColor) {
   };
 }
 
-export function autoCrop(srcCanvas, tolerance = 15) {
+export function autoCrop(srcCanvas, tolerance = 128) {
   const w = srcCanvas.width;
   const h = srcCanvas.height;
   const data = get2dContext(srcCanvas, { willReadFrequently: true }).getImageData(0, 0, w, h).data;

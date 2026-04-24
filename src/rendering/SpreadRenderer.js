@@ -1,7 +1,9 @@
 import { fillLorem } from "./text.js";
 import { drawPageBorder } from "./primitives.js";
+import { applyEffectsToCanvas } from "../effects/pipeline.js";
 
-const TURN_EASING_POWER = 4;
+const TURN_EASING_POWER = 3;
+const TURN_DURATION_MS = 750;
 
 function get2dContext(canvas, options) {
   return canvas.getContext("2d", options);
@@ -275,10 +277,12 @@ export class SpreadRenderer {
     base.height = previewHeight;
     get2dContext(base, { willReadFrequently: true }).drawImage(page.srcCanvas, 0, 0, previewWidth, previewHeight);
 
-    let out = base;
-    for (const effect of effectEntry.pipeline) {
-      out = effect(out);
-    }
+    const out = applyEffectsToCanvas(
+      base,
+      effectEntry.effects ?? page.effects,
+      effectEntry.layerCache || null,
+      `${previewWidth}x${previewHeight}`
+    );
 
     pageCache.variants.set(cacheKey, out);
     if (pageCache.variants.size > 8) {
@@ -305,7 +309,7 @@ export class SpreadRenderer {
     const landAnimations = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / 1000);
+      const progress = Math.min(1, (now - animation.start) / TURN_DURATION_MS);
       const easedProgress = easeTurnProgress(progress);
       const phaseProgress = easedProgress < 0.5 ? easedProgress / 0.5 : (easedProgress - 0.5) / 0.5;
 

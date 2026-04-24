@@ -4,6 +4,7 @@ import { SpreadRenderer } from "./SpreadRenderer.js";
 
 const MAX_SHADOW_OCCLUDERS = 8;
 const TURN_EASING_POWER = 3;
+const TURN_DURATION_MS = 750;
 const PAGE_SURFACE_SCALE = 2;
 
 function get2dContext(canvas, options) {
@@ -32,6 +33,19 @@ function parseHexColor(hex) {
     parseInt(hex.slice(5, 7), 16) / 255,
     1,
   ];
+}
+
+function getBlendModeIndex(mode) {
+  switch (mode) {
+    case "multiply":
+      return 1;
+    case "screen":
+      return 2;
+    case "overlay":
+      return 3;
+    default:
+      return 0;
+  }
 }
 
 function setBackendName(name) {
@@ -333,7 +347,6 @@ export class WebGPUSpreadRenderer {
     this.backendName = "webgpu-pending";
     this.ready = false;
     this.textureCache = new WeakMap();
-    this.effectCache = new WeakMap();
     this.pageSurfaceCache = new WeakMap();
     this.sceneByCanvas = new WeakMap();
     this.chromeCache = new Map();
@@ -342,6 +355,7 @@ export class WebGPUSpreadRenderer {
     this.fallbackRenderer = null;
     this.animationFrame = 0;
     this.animations = [];
+    this.doneCallbacks = [];
     this.baseScene = null;
     this.lastScene = null;
     this.lastRenderArgs = null;
@@ -374,6 +388,7 @@ export class WebGPUSpreadRenderer {
     if (this.animationFrame) cancelAnimationFrame(this.animationFrame);
     this.animationFrame = 0;
     this.animations = [];
+    this.doneCallbacks = [];
     this.baseScene = this.lastScene;
     if (this.ready && this.baseScene) this.#drawStaticScene(this.baseScene);
   }
@@ -437,8 +452,8 @@ export class WebGPUSpreadRenderer {
       fromScene,
       toScene,
       start: performance.now(),
-      onDone,
     });
+    if (onDone) this.doneCallbacks.push(onDone);
 
     if (this.ready && !this.animationFrame) {
       this.animationFrame = requestAnimationFrame(now => this.#tick(now));
@@ -546,6 +561,10 @@ export class WebGPUSpreadRenderer {
                 canvas: vec4<f32>,
                 params: vec4<f32>,
                 shadowInfo: vec4<f32>,
+                paperColor: vec4<f32>,
+                effectA: vec4<f32>,
+                effectB: vec4<f32>,
+                effectC: vec4<f32>,
                 occluders: array<vec4<f32>, 32>,
               };
 
@@ -599,6 +618,10 @@ export class WebGPUSpreadRenderer {
                 canvas: vec4<f32>,
                 params: vec4<f32>,
                 shadowInfo: vec4<f32>,
+                paperColor: vec4<f32>,
+                effectA: vec4<f32>,
+                effectB: vec4<f32>,
+                effectC: vec4<f32>,
                 occluders: array<vec4<f32>, 32>,
               };
 
@@ -619,6 +642,87 @@ export class WebGPUSpreadRenderer {
 
               fn getOccluderPoint(index: u32, corner: u32) -> vec4<f32> {
                 return uniforms.occluders[index * 4u + corner];
+              }
+
+              fn getSaturation(rgb: vec3<f32>) -> f32 {
+                let maxC = max(max(rgb.x, rgb.y), rgb.z);
+                let minC = min(min(rgb.x, rgb.y), rgb.z);
+                if (maxC <= 0.00001) {
+                  return 0.0;
+                }
+                return (maxC - minC) / maxC;
+              }
+
+              fn applyNeutralize(rgb: vec3<f32>) -> vec3<f32> {
+                if (uniforms.effectA.w < 0.5) {
+                  return rgb;
+                }
+                let neutralize = max(uniforms.effectA.xyz, vec3<f32>(1.0 / 255.0));
+                return clamp(rgb / neutralize, vec3<f32>(0.0), vec3<f32>(1.0));
+              }
+
+              fn applyBlackAndWhite(rgb: vec3<f32>) -> vec3<f32> {
+                let saturationThreshold = uniforms.effectB.x;
+                if (saturationThreshold <= 0.0) {
+                  return rgb;
+                }
+                if (getSaturation(rgb) <= saturationThreshold) {
+                  let gray = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+                  return vec3<f32>(gray, gray, gray);
+                }
+                return rgb;
+              }
+
+              fn applyLevelsChannel(value: f32, blackPoint: f32, grayPoint: f32, whitePoint: f32) -> f32 {
+                let normalized = clamp((value - blackPoint) / max(0.0001, whitePoint - blackPoint), 0.0, 1.0);
+                let midpoint = clamp((grayPoint - blackPoint) / max(0.0001, whitePoint - blackPoint), 0.01, 0.99);
+                let gamma = log(0.5) / log(midpoint);
+                return pow(normalized, gamma);
+              }
+
+              fn applyLevels(rgb: vec3<f32>) -> vec3<f32> {
+                if (getSaturation(rgb) > uniforms.effectB.x) {
+                  return rgb;
+                }
+                let blackPoint = uniforms.effectB.y;
+                let grayPoint = uniforms.effectB.z;
+                let whitePoint = uniforms.effectB.w;
+                return clamp(vec3<f32>(
+                  applyLevelsChannel(rgb.x, blackPoint, grayPoint, whitePoint),
+                  applyLevelsChannel(rgb.y, blackPoint, grayPoint, whitePoint),
+                  applyLevelsChannel(rgb.z, blackPoint, grayPoint, whitePoint)
+                ), vec3<f32>(0.0), vec3<f32>(1.0));
+              }
+
+              fn blendOverlay(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+                let low = 2.0 * base * blend;
+                let high = 1.0 - 2.0 * (1.0 - base) * (1.0 - blend);
+                return vec3<f32>(
+                  select(low.x, high.x, base.x >= 0.5),
+                  select(low.y, high.y, base.y >= 0.5),
+                  select(low.z, high.z, base.z >= 0.5)
+                );
+              }
+
+              fn applyBlendMode(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
+                let mode = i32(round(uniforms.effectC.x));
+                if (mode == 1) {
+                  return base * blend;
+                }
+                if (mode == 2) {
+                  return 1.0 - (1.0 - base) * (1.0 - blend);
+                }
+                if (mode == 3) {
+                  return blendOverlay(base, blend);
+                }
+                return blend;
+              }
+
+              fn unpremultiply(rgb: vec3<f32>, alpha: f32) -> vec3<f32> {
+                if (alpha <= 0.00001) {
+                  return vec3<f32>(0.0);
+                }
+                return clamp(rgb / alpha, vec3<f32>(0.0), vec3<f32>(1.0));
               }
 
               fn computeShadow(worldPos: vec3<f32>) -> f32 {
@@ -664,15 +768,21 @@ export class WebGPUSpreadRenderer {
               };
 
               @fragment
-              fn main(input: FragmentIn, @builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+              fn main(input: FragmentIn) -> @location(0) vec4<f32> {
                 let texel = textureSample(tex, texSampler, input.uv);
+                let paper = uniforms.paperColor.rgb;
+                var content = unpremultiply(texel.rgb, texel.a);
+                content = applyNeutralize(content);
+                content = applyBlackAndWhite(content);
+                content = applyLevels(content);
+                let composited = mix(paper, applyBlendMode(paper, content), texel.a);
                 let normal = normalize(input.worldNormal);
                 let lightDir = vec3<f32>(0.0, 0.0, -1.0);
                 let diffuse = abs(dot(normal, lightDir));
                 let shade = 0.82 + 0.18 * diffuse;
                 let shadow = computeShadow(input.worldPos);
                 let shadowShade = mix(1.0, 0.6, shadow);
-                return vec4<f32>(texel.rgb * shade * shadowShade, texel.a);
+                return vec4<f32>(composited * shade * shadowShade, 1.0);
               }
             `,
       });
@@ -886,7 +996,7 @@ export class WebGPUSpreadRenderer {
     const completed = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / 1000);
+      const progress = Math.min(1, (now - animation.start) / TURN_DURATION_MS);
       if (progress >= 1) {
         this.baseScene = animation.toScene;
         completed.push(animation);
@@ -933,16 +1043,15 @@ export class WebGPUSpreadRenderer {
       leafPass.end();
     });
 
-    for (const animation of completed) {
-      animation.onDone?.();
-    }
-
     this.animations = active.map(({ progress, ...animation }) => animation);
     if (this.animations.length) {
       this.animationFrame = requestAnimationFrame(nextNow => this.#tick(nextNow));
     } else {
       this.animationFrame = 0;
       if (this.baseScene) this.#drawStaticScene(this.baseScene);
+      const callbacks = [...this.doneCallbacks];
+      this.doneCallbacks = [];
+      for (const callback of callbacks) callback();
     }
   }
 
@@ -1040,18 +1149,36 @@ export class WebGPUSpreadRenderer {
     const sideState = scene.sideStates[side];
     if (!sideState?.page) return;
 
+    const effectEntry = scene.effects[side];
     const pageSurface = this.#getPageSurfaceCanvas(scene, sideState, side);
     if (!pageSurface) return;
 
     const geometry = this.#getPageGeometry(sideState.pageRect.w, sideState.pageRect.h);
     const textureResource = this.#getTextureResource(pageSurface);
-    const uniformData = new Float32Array(160);
+    const gpuEffects = effectEntry?.gpu?.fragment || {
+      neutralizeColor: null,
+      bwThreshold: 0,
+      levels: { black: 0, gray: 128, white: 255 },
+    };
+    const neutralize = parseHexColor(gpuEffects.neutralizeColor || "#ffffff");
+    const neutralizeEnabled = gpuEffects.neutralizeColor ? 1 : 0;
+    const paperColor = parseHexColor(scene.display.paperColor);
+    const uniformData = new Float32Array(176);
     uniformData.set(modelMatrix, 0);
     uniformData.set([light.x, light.y, light.z, 1], 16);
     uniformData.set([this.canvas.width, this.canvas.height, -this.canvas.width, this.canvas.width], 20);
     uniformData.set([0.8, 0.25, normalSign, flipX ? 1 : 0], 24);
     uniformData.set([occluders.length, ignoreOccluderId, 0, 0], 28);
-    let offset = 32;
+    uniformData.set(paperColor, 32);
+    uniformData.set([neutralize[0], neutralize[1], neutralize[2], neutralizeEnabled], 36);
+    uniformData.set([
+      gpuEffects.bwThreshold ?? 0,
+      (gpuEffects.levels?.black ?? 0) / 255,
+      (gpuEffects.levels?.gray ?? 128) / 255,
+      (gpuEffects.levels?.white ?? 255) / 255,
+    ], 40);
+    uniformData.set([getBlendModeIndex(scene.display.contentBlendMode), 0, 0, 0], 44);
+    let offset = 48;
     for (let i = 0; i < MAX_SHADOW_OCCLUDERS; i += 1) {
       const occluder = occluders[i];
       for (let corner = 0; corner < 4; corner += 1) {
@@ -1091,11 +1218,9 @@ export class WebGPUSpreadRenderer {
   #getPageSurfaceCanvas(scene, sideState, side) {
     if (!sideState?.page) return null;
 
-    const effectEntry = scene.effects[side];
     const measurement = measurePageDraw(sideState.page, sideState.contentRect, sideState.contentMode);
     const drawKey = measurement
       ? [
-          effectEntry.key,
           Math.round(sideState.pageRect.w),
           Math.round(sideState.pageRect.h),
           sideState.page.crop.left,
@@ -1107,8 +1232,6 @@ export class WebGPUSpreadRenderer {
           Math.round(sideState.contentRect.w),
           Math.round(sideState.contentRect.h),
           sideState.contentMode,
-          scene.display.paperColor,
-          scene.display.contentBlendMode,
         ].join("|")
       : null;
 
@@ -1131,18 +1254,10 @@ export class WebGPUSpreadRenderer {
     surface.height = pageHeight * PAGE_SURFACE_SCALE;
     const ctx = setHighQualitySampling(get2dContext(surface, { willReadFrequently: true }));
     ctx.scale(PAGE_SURFACE_SCALE, PAGE_SURFACE_SCALE);
-    ctx.fillStyle = scene.display.paperColor;
-    ctx.fillRect(0, 0, pageWidth, pageHeight);
 
     if (measurement) {
-      const processedCanvas = this.#getProcessedCanvas(
-        sideState.page,
-        measurement.drawRect.w * PAGE_SURFACE_SCALE,
-        measurement.drawRect.h * PAGE_SURFACE_SCALE,
-        effectEntry
-      );
-
-      if (processedCanvas) {
+      const sourceCanvas = sideState.page.srcCanvas;
+      if (sourceCanvas) {
         if (measurement.clipRect) {
           ctx.save();
           ctx.beginPath();
@@ -1155,16 +1270,17 @@ export class WebGPUSpreadRenderer {
           ctx.clip();
         }
 
-        const prevBlend = ctx.globalCompositeOperation;
-        ctx.globalCompositeOperation = scene.display.contentBlendMode;
         ctx.drawImage(
-          processedCanvas,
+          sourceCanvas,
+          0,
+          0,
+          sourceCanvas.width,
+          sourceCanvas.height,
           Math.round(measurement.drawRect.x - sideState.pageRect.x),
           Math.round(measurement.drawRect.y - sideState.pageRect.y),
           Math.round(measurement.drawRect.w),
           Math.round(measurement.drawRect.h)
         );
-        ctx.globalCompositeOperation = prevBlend;
 
         if (measurement.clipRect) ctx.restore();
       }
@@ -1332,44 +1448,6 @@ export class WebGPUSpreadRenderer {
     };
     this.pageGeometryCache.set(key, geometry);
     return geometry;
-  }
-
-  #getProcessedCanvas(page, targetWidth, targetHeight, effectEntry) {
-    if (!page?.srcCanvas) return null;
-
-    const previewWidth = Math.max(1, Math.min(page.srcCanvas.width, Math.round(targetWidth || page.srcCanvas.width)));
-    const previewHeight = Math.max(1, Math.min(page.srcCanvas.height, Math.round(targetHeight || page.srcCanvas.height)));
-    const cacheKey = `${effectEntry.key}|${previewWidth}x${previewHeight}`;
-
-    let pageCache = this.effectCache.get(page);
-    if (!pageCache || pageCache.srcCanvas !== page.srcCanvas) {
-      pageCache = {
-        srcCanvas: page.srcCanvas,
-        variants: new Map(),
-      };
-      this.effectCache.set(page, pageCache);
-    }
-
-    const cached = pageCache.variants.get(cacheKey);
-    if (cached) return cached;
-
-    const base = document.createElement("canvas");
-    base.width = previewWidth;
-    base.height = previewHeight;
-    setHighQualitySampling(get2dContext(base, { willReadFrequently: true }))
-      .drawImage(page.srcCanvas, 0, 0, previewWidth, previewHeight);
-
-    let out = base;
-    for (const effect of effectEntry.pipeline) out = effect(out);
-    this.#markCanvasDirty(out);
-
-    pageCache.variants.set(cacheKey, out);
-    if (pageCache.variants.size > 8) {
-      const oldestKey = pageCache.variants.keys().next().value;
-      pageCache.variants.delete(oldestKey);
-    }
-
-    return out;
   }
 
   #markCanvasDirty(canvas) {
