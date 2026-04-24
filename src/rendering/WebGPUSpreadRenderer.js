@@ -880,6 +880,18 @@ export class WebGPUSpreadRenderer {
         return;
       }
 
+      const underlaySides = this.#getUnderlaySides(active, this.baseScene || currentScene);
+      if (underlaySides.left && light) {
+        this.#drawPageSurface(pass, underlaySides.left, "left", createPageModelMatrix(underlaySides.left.sideStates.left.pageRect, 0), light, {
+          occluders: shadowOccluders,
+        });
+      }
+      if (underlaySides.right && light) {
+        this.#drawPageSurface(pass, underlaySides.right, "right", createPageModelMatrix(underlaySides.right.sideStates.right.pageRect, 0), light, {
+          occluders: shadowOccluders,
+        });
+      }
+
       for (const animation of active) {
         this.#drawAnimationFrame(pass, animation, light, shadowOccluders);
       }
@@ -905,27 +917,8 @@ export class WebGPUSpreadRenderer {
 
     const sourceSide = animation.direction > 0 ? "right" : "left";
     const backSide = animation.direction > 0 ? "left" : "right";
-    const leftStaticScene = animation.direction < 0 ? animation.toScene : animation.fromScene;
-    const rightStaticScene = animation.direction > 0 ? animation.toScene : animation.fromScene;
     const turningScene = animation.fromScene;
     const backScene = animation.toScene;
-
-    this.#drawPageSurface(
-      pass,
-      leftStaticScene,
-      "left",
-      createPageModelMatrix(leftStaticScene.sideStates.left.pageRect, 0),
-      light,
-      { occluders }
-    );
-    this.#drawPageSurface(
-      pass,
-      rightStaticScene,
-      "right",
-      createPageModelMatrix(rightStaticScene.sideStates.right.pageRect, 0),
-      light,
-      { occluders }
-    );
 
     const turningRect = turningScene.sideStates[sourceSide].pageRect;
     const hingeLocalX = sourceSide === "right" ? 0 : turningRect.w;
@@ -946,6 +939,21 @@ export class WebGPUSpreadRenderer {
         ignoreOccluderId: animation.__shadowId,
       });
     }
+  }
+
+  #getUnderlaySides(active, fallbackScene) {
+    const initialScene = active[0]?.fromScene || fallbackScene || null;
+    const sides = {
+      left: initialScene,
+      right: initialScene,
+    };
+
+    for (const animation of active) {
+      const liftedSide = animation.direction > 0 ? "right" : "left";
+      sides[liftedSide] = animation.toScene;
+    }
+
+    return sides;
   }
 
   #buildShadowOccluders(animations) {
