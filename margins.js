@@ -38,11 +38,16 @@ const contentState = {
 };
 
 let dragHandle  = null;  // { edge, startX, startY, startCrop, side }
+const PDF_RENDER_SCALE = 1.5;
 
 function getSelectedPages() {
   const sel = contentState.selectedPageIdxs;
   if (!sel.size) return [contentState.pages[contentState.editingPageIdx]].filter(Boolean);
   return [...sel].map(i => contentState.pages[i]).filter(Boolean);
+}
+
+function getEditingPage() {
+  return contentState.pages[contentState.editingPageIdx] ?? null;
 }
 
 function makeDefaultPageEffects() {
@@ -72,35 +77,14 @@ function getPageEffectKey(pg) {
   return `neutralize:${neutralizeColor || "none"}|levels:${levels.black},${levels.gray.toFixed(2)},${levels.white}|bw:${bwThreshold}`;
 }
 
+function makeRenderCache(effectKey = "") {
+  return { effectKey, variants: new Map() };
+}
+
 function invalidatePageRenderCache(pg, { keepThumbnail = false } = {}) {
   if (!pg) return;
-  pg.renderCache = { effectKey: "", canvas: null };
+  pg.renderCache = makeRenderCache();
   if (!keepThumbnail) pg.thumbnail = null;
-}
-
-function refreshSelectedThumbnails() {
-  for (const pg of getSelectedPages()) {
-    if (pg?.srcCanvas) generateThumbnail(pg);
-  }
-  renderPageStrip();
-}
-
-let effectPreviewTimer = 0;
-
-function scheduleEffectPreviewDraw() {
-  if (effectPreviewTimer) clearTimeout(effectPreviewTimer);
-  effectPreviewTimer = setTimeout(() => {
-    effectPreviewTimer = 0;
-    drawContent();
-  }, 40);
-}
-
-function flushEffectPreviewDraw() {
-  if (effectPreviewTimer) {
-    clearTimeout(effectPreviewTimer);
-    effectPreviewTimer = 0;
-  }
-  drawContent();
 }
 
 function normalizeHexColor(hex) {
@@ -231,10 +215,10 @@ function getSpreadMetrics(vals, scale) {
 function drawPageContent(pg, x, y, w, h, opts = {}) {
   if (!pg || !pg.srcCanvas) return null;
   const { mode = "fit", clipToRect = false } = opts;
-  const srcCanvas = getProcessedCanvas(pg);
+  const sourceCanvas = pg.srcCanvas;
   const { crop } = pg;
-  const sw = srcCanvas.width  - crop.left - crop.right;
-  const sh = srcCanvas.height - crop.top  - crop.bottom;
+  const sw = sourceCanvas.width  - crop.left - crop.right;
+  const sh = sourceCanvas.height - crop.top  - crop.bottom;
   if (sw <= 0 || sh <= 0) return null;
   const s  = mode === "fill"
     ? Math.max(w / sw, h / sh)
@@ -247,14 +231,15 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
   // Snap full image draw rect to integer pixels so drawImage never sub-pixel blurs.
   const rix = Math.round(x + (w - sw * s) / 2 - crop.left * s);
   const riy = Math.round(y + (h - sh * s) / 2 - crop.top  * s);
-  const riw = Math.round(srcCanvas.width  * s);
-  const rih = Math.round(srcCanvas.height * s);
+  const riw = Math.max(1, Math.round(sourceCanvas.width  * s));
+  const rih = Math.max(1, Math.round(sourceCanvas.height * s));
+  const previewCanvas = getProcessedCanvas(pg, riw, rih);
 
   // Pixel-snapped clip/content boundaries derived from the rounded draw rect.
-  const rcx  = Math.round(rix + crop.left  * riw / srcCanvas.width);
-  const rcy  = Math.round(riy + crop.top   * rih / srcCanvas.height);
-  const rcx2 = Math.round(rix + (srcCanvas.width  - crop.right)  * riw / srcCanvas.width);
-  const rcy2 = Math.round(riy + (srcCanvas.height - crop.bottom) * rih / srcCanvas.height);
+  const rcx  = Math.round(rix + crop.left  * riw / sourceCanvas.width);
+  const rcy  = Math.round(riy + crop.top   * rih / sourceCanvas.height);
+  const rcx2 = Math.round(rix + (sourceCanvas.width  - crop.right)  * riw / sourceCanvas.width);
+  const rcy2 = Math.round(riy + (sourceCanvas.height - crop.bottom) * rih / sourceCanvas.height);
 
   // Pixel-snapped destination clip rect (for cover/fill mode).
   const rx0 = Math.round(x),      ry0 = Math.round(y);
@@ -268,7 +253,7 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
   }
   const prevBlend = ctx.globalCompositeOperation;
   ctx.globalCompositeOperation = contentBlendMode;
-  ctx.drawImage(srcCanvas, rix, riy, riw, rih);
+  ctx.drawImage(previewCanvas, rix, riy, riw, rih);
   ctx.globalCompositeOperation = prevBlend;
   if (clipToRect) ctx.restore();
 
@@ -283,8 +268,8 @@ function drawPageContent(pg, x, y, w, h, opts = {}) {
     w: Math.max(0, visibleRight  - visibleX),
     h: Math.max(0, visibleBottom - visibleY),
     fitScale: s,
-    sw: srcCanvas.width,
-    sh: srcCanvas.height,
+    sw: sourceCanvas.width,
+    sh: sourceCanvas.height,
   };
 }
 
@@ -501,18 +486,32 @@ function makePdfPageDescriptor(pageNum, aspectRatio) {
     cropInitialized: false,
     tolerance: 15, cover: false, fitAxis: "inside",
     effects: makeDefaultPageEffects(),
-    renderCache: { effectKey: "", canvas: null },
+    renderCache: makeRenderCache(),
     thumbnail: null,
+    thumbnailDirty: false,
   };
 }
 
-function getProcessedCanvas(pg) {
+function getProcessedCanvas(pg, targetWidth = null, targetHeight = null) {
   if (!pg?.srcCanvas) return null;
 
-  const effectKey = getPageEffectKey(pg);
-  if (pg.renderCache?.canvas && pg.renderCache.effectKey === effectKey) return pg.renderCache.canvas;
-
   const srcCanvas = pg.srcCanvas;
+  const previewWidth = Math.max(1, Math.min(
+    srcCanvas.width,
+    Math.round(targetWidth || srcCanvas.width)
+  ));
+  const previewHeight = Math.max(1, Math.min(
+    srcCanvas.height,
+    Math.round(targetHeight || srcCanvas.height)
+  ));
+  const effectKey = getPageEffectKey(pg);
+  if (!pg.renderCache?.variants || pg.renderCache.effectKey !== effectKey) {
+    pg.renderCache = makeRenderCache(effectKey);
+  }
+  const cacheKey = `${previewWidth}x${previewHeight}`;
+  const cachedCanvas = pg.renderCache.variants.get(cacheKey);
+  if (cachedCanvas) return cachedCanvas;
+
   const {
     bwThreshold = 0,
     neutralizeColor = null,
@@ -524,18 +523,24 @@ function getProcessedCanvas(pg) {
   const neutralizeRgb = hexToRgb(neutralizeColor);
   const hasNeutralizer = !!neutralizeRgb && (neutralizeRgb.r !== 255 || neutralizeRgb.g !== 255 || neutralizeRgb.b !== 255);
   const hasLevels = levels.black !== 0 || levels.gray !== 128 || levels.white !== 255;
-  if (bwThreshold <= 0 && !hasNeutralizer && !hasLevels) {
-    pg.renderCache = { effectKey, canvas: srcCanvas };
-    return srcCanvas;
-  }
 
   const out = document.createElement("canvas");
-  out.width = srcCanvas.width;
-  out.height = srcCanvas.height;
+  out.width = previewWidth;
+  out.height = previewHeight;
 
-  const srcCtx = get2dContext(srcCanvas, { willReadFrequently: true });
   const outCtx = get2dContext(out, { willReadFrequently: true });
-  const imageData = srcCtx.getImageData(0, 0, srcCanvas.width, srcCanvas.height);
+  outCtx.drawImage(srcCanvas, 0, 0, out.width, out.height);
+
+  if (bwThreshold <= 0 && !hasNeutralizer && !hasLevels) {
+    pg.renderCache.variants.set(cacheKey, out);
+    if (pg.renderCache.variants.size > 4) {
+      const oldestKey = pg.renderCache.variants.keys().next().value;
+      pg.renderCache.variants.delete(oldestKey);
+    }
+    return out;
+  }
+
+  const imageData = outCtx.getImageData(0, 0, out.width, out.height);
   const { data } = imageData;
   const threshold = bwThreshold / 100;
 
@@ -577,7 +582,11 @@ function getProcessedCanvas(pg) {
   }
 
   outCtx.putImageData(imageData, 0, 0);
-  pg.renderCache = { effectKey, canvas: out };
+  pg.renderCache.variants.set(cacheKey, out);
+  if (pg.renderCache.variants.size > 4) {
+    const oldestKey = pg.renderCache.variants.keys().next().value;
+    pg.renderCache.variants.delete(oldestKey);
+  }
   return out;
 }
 
@@ -591,8 +600,9 @@ function generateThumbnail(pg) {
   tctx.fillStyle = paperColor;
   tctx.fillRect(0, 0, tc.width, tc.height);
   tctx.globalCompositeOperation = contentBlendMode;
-  tctx.drawImage(getProcessedCanvas(pg), 0, 0, tc.width, tc.height);
+  tctx.drawImage(getProcessedCanvas(pg, tc.width, tc.height), 0, 0, tc.width, tc.height);
   pg.thumbnail = tc;
+  pg.thumbnailDirty = false;
 }
 
 function regenerateAllThumbnails() {
@@ -609,7 +619,7 @@ async function renderPdfPage(pageIdx) {
   pg.loading = true;
   try {
     const page = await contentState.pdfDoc.getPage(pg.pageNum);
-    const vp   = page.getViewport({ scale: 2 });
+    const vp   = page.getViewport({ scale: PDF_RENDER_SCALE });
     const off  = document.createElement("canvas");
     off.width  = vp.width; off.height = vp.height;
     await page.render({
@@ -689,7 +699,13 @@ function renderPageStrip() {
   }
   strip.style.display = "";
   const THUMB_H = 56;
+  const spread = getEffectiveSpread();
+  const leftIdx = spread * 2 - 1;
+  const rightIdx = spread * 2;
   contentState.pages.forEach((pg, i) => {
+    const inSpread = i === leftIdx || i === rightIdx;
+    const isActive = appMode === "content" && i === contentState.editingPageIdx;
+    if (pg.thumbnailDirty && (isActive || inSpread) && pg.srcCanvas) generateThumbnail(pg);
     const thumb = document.createElement("div");
     thumb.className = "strip-thumb";
     const tc = document.createElement("canvas");
@@ -1315,18 +1331,20 @@ function applyTrimToPage(pg) {
   if (valEl) valEl.textContent = tolerance;
 }
 
-function applyBwToPage(pg) {
+function applyBwToPage(pg, threshold = null) {
   if (!pg) return;
   const slider = document.getElementById("bw-slider");
-  const threshold = slider ? parseInt(slider.value, 10) : 0;
-  getPageEffectState(pg).bwThreshold = Math.max(0, Math.min(100, threshold || 0));
+  const nextThreshold = threshold ?? (slider ? parseInt(slider.value, 10) : 0);
+  getPageEffectState(pg).bwThreshold = Math.max(0, Math.min(100, nextThreshold || 0));
   invalidatePageRenderCache(pg, { keepThumbnail: true });
+  pg.thumbnailDirty = true;
 }
 
 function applyNeutralizeColorToPage(pg, color) {
   if (!pg) return;
   getPageEffectState(pg).neutralizeColor = normalizeHexColor(color);
   invalidatePageRenderCache(pg, { keepThumbnail: true });
+  pg.thumbnailDirty = true;
 }
 
 function applyLevelsToPage(pg, levels) {
@@ -1336,6 +1354,7 @@ function applyLevelsToPage(pg, levels) {
   effectState.levelsGray = levels.gray;
   effectState.levelsWhite = levels.white;
   invalidatePageRenderCache(pg, { keepThumbnail: true });
+  pg.thumbnailDirty = true;
 }
 
 // Sync all per-page sidebar controls to the currently editing page
@@ -1380,30 +1399,35 @@ function initContentListeners() {
   });
 
   addListener("bw-slider", "input", () => {
-    for (const pg of getSelectedPages()) applyBwToPage(pg);
-    scheduleEffectPreviewDraw();
+    const threshold = parseInt(document.getElementById("bw-slider").value, 10) || 0;
+    applyBwToPage(getEditingPage(), threshold);
+    drawContent();
   });
   addListener("bw-slider", "change", () => {
-    refreshSelectedThumbnails();
-    flushEffectPreviewDraw();
+    const threshold = parseInt(document.getElementById("bw-slider").value, 10) || 0;
+    for (const pg of getSelectedPages()) applyBwToPage(pg, threshold);
+    renderPageStrip();
+    drawContent();
   });
 
   addListener("neutralize-clear", "click", () => {
     for (const pg of getSelectedPages()) applyNeutralizeColorToPage(pg, null);
     syncPageUI();
-    refreshSelectedThumbnails();
+    renderPageStrip();
     drawContent();
   });
 
   addListener("neutralize-color", "input", () => {
     const color = document.getElementById("neutralize-color").value;
-    for (const pg of getSelectedPages()) applyNeutralizeColorToPage(pg, color);
-    syncPageUI();
-    scheduleEffectPreviewDraw();
+    applyNeutralizeColorToPage(getEditingPage(), color);
+    drawContent();
   });
   addListener("neutralize-color", "change", () => {
-    refreshSelectedThumbnails();
-    flushEffectPreviewDraw();
+    const color = document.getElementById("neutralize-color").value;
+    for (const pg of getSelectedPages()) applyNeutralizeColorToPage(pg, color);
+    syncPageUI();
+    renderPageStrip();
+    drawContent();
   });
 
   function applyLevelsFromUI(changedId) {
@@ -1424,24 +1448,42 @@ function initContentListeners() {
 
     const levels = normalizeLevels(black, gray, white);
     setLevelsUI(levels);
-    for (const pg of getSelectedPages()) applyLevelsToPage(pg, levels);
-    scheduleEffectPreviewDraw();
+    applyLevelsToPage(getEditingPage(), levels);
+    drawContent();
   }
 
   addListener("levels-black", "input", () => { applyLevelsFromUI("levels-black"); });
   addListener("levels-gray", "input", () => { applyLevelsFromUI("levels-gray"); });
   addListener("levels-white", "input", () => { applyLevelsFromUI("levels-white"); });
   addListener("levels-black", "change", () => {
-    refreshSelectedThumbnails();
-    flushEffectPreviewDraw();
+    const levels = normalizeLevels(
+      parseInt(document.getElementById("levels-black").value, 10),
+      parseInt(document.getElementById("levels-gray").value, 10),
+      parseInt(document.getElementById("levels-white").value, 10)
+    );
+    for (const pg of getSelectedPages()) applyLevelsToPage(pg, levels);
+    renderPageStrip();
+    drawContent();
   });
   addListener("levels-gray", "change", () => {
-    refreshSelectedThumbnails();
-    flushEffectPreviewDraw();
+    const levels = normalizeLevels(
+      parseInt(document.getElementById("levels-black").value, 10),
+      parseInt(document.getElementById("levels-gray").value, 10),
+      parseInt(document.getElementById("levels-white").value, 10)
+    );
+    for (const pg of getSelectedPages()) applyLevelsToPage(pg, levels);
+    renderPageStrip();
+    drawContent();
   });
   addListener("levels-white", "change", () => {
-    refreshSelectedThumbnails();
-    flushEffectPreviewDraw();
+    const levels = normalizeLevels(
+      parseInt(document.getElementById("levels-black").value, 10),
+      parseInt(document.getElementById("levels-gray").value, 10),
+      parseInt(document.getElementById("levels-white").value, 10)
+    );
+    for (const pg of getSelectedPages()) applyLevelsToPage(pg, levels);
+    renderPageStrip();
+    drawContent();
   });
 
   addListener("cover-check", "change", () => {
@@ -1463,10 +1505,6 @@ function switchMode(mode) {
   if (mode === appMode) return;
 
   stopSpreadAnimation();
-  if (effectPreviewTimer) {
-    clearTimeout(effectPreviewTimer);
-    effectPreviewTimer = 0;
-  }
   if (appMode === "layout") saveMarginState();
   clearListeners();
   appMode    = mode;
@@ -1894,13 +1932,14 @@ async function appendFiles(files) {
       off.width = img.naturalWidth; off.height = img.naturalHeight;
       offCtx.drawImage(img, 0, 0);
       URL.revokeObjectURL(url);
-      const pg = { pageNum: null, aspectRatio: off.width / off.height,
-                   srcCanvas: off, loading: false,
-                   crop: autoCrop(off, 15), cropInitialized: true,
-                   tolerance: 15, cover: false, fitAxis: "inside",
-                   effects: makeDefaultPageEffects(),
-                   renderCache: { effectKey: "", canvas: null },
-                   thumbnail: null };
+       const pg = { pageNum: null, aspectRatio: off.width / off.height,
+                    srcCanvas: off, loading: false,
+                    crop: autoCrop(off, 15), cropInitialized: true,
+                    tolerance: 15, cover: false, fitAxis: "inside",
+                    effects: makeDefaultPageEffects(),
+                    renderCache: makeRenderCache(),
+                    thumbnail: null,
+                    thumbnailDirty: false };
       generateThumbnail(pg);
       contentState.pages.push(pg);
     }
