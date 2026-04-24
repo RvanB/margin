@@ -3,9 +3,22 @@ import { drawPageBorder } from "./primitives.js";
 import { SpreadRenderer } from "./SpreadRenderer.js";
 
 const MAX_SHADOW_OCCLUDERS = 8;
+const TURN_EASING_POWER = 3;
+const PAGE_SURFACE_SCALE = 2;
 
 function get2dContext(canvas, options) {
   return canvas.getContext("2d", options);
+}
+
+function setHighQualitySampling(ctx) {
+  if (!ctx) return ctx;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  return ctx;
+}
+
+function nextCanvasVersion(currentVersion) {
+  return (currentVersion || 0) + 1;
 }
 
 function parseHexColor(hex) {
@@ -280,6 +293,11 @@ function createPageModelMatrix(pageRect, z, angle = 0, hingeLocalX = 0) {
   ]);
 }
 
+function easeTurnProgress(progress) {
+  const t = Math.max(0, Math.min(1, progress));
+  return 1 - Math.pow(1 - t, TURN_EASING_POWER);
+}
+
 function transformPoint(matrix, x, y, z = 0) {
   return {
     x: matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
@@ -320,6 +338,7 @@ export class WebGPUSpreadRenderer {
     this.sceneByCanvas = new WeakMap();
     this.chromeCache = new Map();
     this.pageGeometryCache = new Map();
+    this.canvasVersions = new WeakMap();
     this.fallbackRenderer = null;
     this.animationFrame = 0;
     this.animations = [];
@@ -519,11 +538,8 @@ export class WebGPUSpreadRenderer {
         },
       });
 
-      this.pagePipeline = this.device.createRenderPipeline({
-        layout: "auto",
-        vertex: {
-          module: this.device.createShaderModule({
-            code: `
+      const pageVertexModule = this.device.createShaderModule({
+        code: `
               struct Uniforms {
                 model: mat4x4<f32>,
                 light: vec4<f32>,
@@ -573,20 +589,10 @@ export class WebGPUSpreadRenderer {
                 return output;
               }
             `,
-          }),
-          entryPoint: "main",
-          buffers: [{
-            arrayStride: 32,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x3" },
-              { shaderLocation: 1, offset: 12, format: "float32x3" },
-              { shaderLocation: 2, offset: 24, format: "float32x2" },
-            ],
-          }],
-        },
-        fragment: {
-          module: this.device.createShaderModule({
-            code: `
+      });
+
+      const pageFragmentModule = this.device.createShaderModule({
+        code: `
               struct Uniforms {
                 model: mat4x4<f32>,
                 light: vec4<f32>,
@@ -665,28 +671,49 @@ export class WebGPUSpreadRenderer {
                 let diffuse = abs(dot(normal, lightDir));
                 let shade = 0.82 + 0.18 * diffuse;
                 let shadow = computeShadow(input.worldPos);
-                let shadowShade = mix(1.0, 0.4, shadow);
+                let shadowShade = mix(1.0, 0.6, shadow);
                 return vec4<f32>(texel.rgb * shade * shadowShade, texel.a);
               }
             `,
-          }),
-          entryPoint: "main",
-          targets: [{
-            format: this.format,
-            blend: {
-              color: {
-                srcFactor: "one",
-                dstFactor: "one-minus-src-alpha",
-                operation: "add",
-              },
-              alpha: {
-                srcFactor: "one",
-                dstFactor: "one-minus-src-alpha",
-                operation: "add",
-              },
+      });
+
+      const pageVertexState = {
+        module: pageVertexModule,
+        entryPoint: "main",
+        buffers: [{
+          arrayStride: 32,
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" },
+            { shaderLocation: 1, offset: 12, format: "float32x3" },
+            { shaderLocation: 2, offset: 24, format: "float32x2" },
+          ],
+        }],
+      };
+
+      const pageFragmentState = {
+        module: pageFragmentModule,
+        entryPoint: "main",
+        targets: [{
+          format: this.format,
+          blend: {
+            color: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
             },
-          }],
-        },
+            alpha: {
+              srcFactor: "one",
+              dstFactor: "one-minus-src-alpha",
+              operation: "add",
+            },
+          },
+        }],
+      };
+
+      this.pagePipeline = this.device.createRenderPipeline({
+        layout: "auto",
+        vertex: pageVertexState,
+        fragment: pageFragmentState,
         primitive: {
           topology: "triangle-list",
           cullMode: "none",
@@ -694,7 +721,7 @@ export class WebGPUSpreadRenderer {
         depthStencil: {
           format: "depth24plus",
           depthWriteEnabled: true,
-          depthCompare: "less",
+          depthCompare: "less-equal",
         },
       });
 
@@ -843,10 +870,12 @@ export class WebGPUSpreadRenderer {
 
   #drawStaticScene(scene) {
     const light = this.#getLight(scene);
-    this.#withPass(pass => {
+    this.#withFrame((encoder, targetView) => {
+      const pass = this.#beginPass(encoder, targetView);
       this.#drawPageSurface(pass, scene, "left", createPageModelMatrix(scene.sideStates.left.pageRect, 0), light);
       this.#drawPageSurface(pass, scene, "right", createPageModelMatrix(scene.sideStates.right.pageRect, 0), light);
       this.#drawChrome(pass, scene);
+      pass.end();
     });
   }
 
@@ -857,7 +886,7 @@ export class WebGPUSpreadRenderer {
     const completed = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / 360);
+      const progress = Math.min(1, (now - animation.start) / 1000);
       if (progress >= 1) {
         this.baseScene = animation.toScene;
         completed.push(animation);
@@ -870,33 +899,38 @@ export class WebGPUSpreadRenderer {
     const light = currentScene ? this.#getLight(currentScene) : null;
     const shadowOccluders = this.#buildShadowOccluders(active);
 
-    this.#withPass(pass => {
+    this.#withFrame((encoder, targetView) => {
       if (!active.length) {
+        const pass = this.#beginPass(encoder, targetView);
         if (this.baseScene && light) {
           this.#drawPageSurface(pass, this.baseScene, "left", createPageModelMatrix(this.baseScene.sideStates.left.pageRect, 0), light);
           this.#drawPageSurface(pass, this.baseScene, "right", createPageModelMatrix(this.baseScene.sideStates.right.pageRect, 0), light);
           this.#drawChrome(pass, this.baseScene);
         }
+        pass.end();
         return;
       }
 
+      const underlayPass = this.#beginPass(encoder, targetView);
       const underlaySides = this.#getUnderlaySides(active, this.baseScene || currentScene);
       if (underlaySides.left && light) {
-        this.#drawPageSurface(pass, underlaySides.left, "left", createPageModelMatrix(underlaySides.left.sideStates.left.pageRect, 0), light, {
+        this.#drawPageSurface(underlayPass, underlaySides.left, "left", createPageModelMatrix(underlaySides.left.sideStates.left.pageRect, 0), light, {
           occluders: shadowOccluders,
         });
       }
       if (underlaySides.right && light) {
-        this.#drawPageSurface(pass, underlaySides.right, "right", createPageModelMatrix(underlaySides.right.sideStates.right.pageRect, 0), light, {
+        this.#drawPageSurface(underlayPass, underlaySides.right, "right", createPageModelMatrix(underlaySides.right.sideStates.right.pageRect, 0), light, {
           occluders: shadowOccluders,
         });
       }
+      underlayPass.end();
 
+      const leafPass = this.#beginPass(encoder, targetView, { clearColor: false, clearDepth: true });
       for (const animation of active) {
-        this.#drawAnimationFrame(pass, animation, light, shadowOccluders);
+        this.#drawAnimationFrame(leafPass, animation, light, shadowOccluders);
       }
-
-      if (currentScene) this.#drawChrome(pass, currentScene);
+      if (currentScene) this.#drawChrome(leafPass, currentScene);
+      leafPass.end();
     });
 
     for (const animation of completed) {
@@ -922,7 +956,8 @@ export class WebGPUSpreadRenderer {
 
     const turningRect = turningScene.sideStates[sourceSide].pageRect;
     const hingeLocalX = sourceSide === "right" ? 0 : turningRect.w;
-    const angle = animation.direction > 0 ? animation.progress * Math.PI : -animation.progress * Math.PI;
+    const turnProgress = easeTurnProgress(animation.progress);
+    const angle = animation.direction > 0 ? turnProgress * Math.PI : -turnProgress * Math.PI;
     const turningModel = createPageModelMatrix(turningRect, 0, angle, hingeLocalX);
     if (Math.cos(angle) >= 0) {
       this.#drawPageSurface(pass, turningScene, sourceSide, turningModel, light, {
@@ -965,7 +1000,8 @@ export class WebGPUSpreadRenderer {
       if (!turningRect) continue;
 
       const hingeLocalX = sourceSide === "right" ? 0 : turningRect.w;
-      const angle = animation.direction > 0 ? animation.progress * Math.PI : -animation.progress * Math.PI;
+      const turnProgress = easeTurnProgress(animation.progress);
+      const angle = animation.direction > 0 ? turnProgress * Math.PI : -turnProgress * Math.PI;
       const turningModel = createPageModelMatrix(turningRect, 0, angle, hingeLocalX);
       const corners = getPageWorldCorners(turningRect, turningModel);
       const flatness = Math.abs(Math.cos(angle));
@@ -1062,6 +1098,10 @@ export class WebGPUSpreadRenderer {
           effectEntry.key,
           Math.round(sideState.pageRect.w),
           Math.round(sideState.pageRect.h),
+          sideState.page.crop.left,
+          sideState.page.crop.top,
+          sideState.page.crop.right,
+          sideState.page.crop.bottom,
           Math.round(sideState.contentRect.x - sideState.pageRect.x),
           Math.round(sideState.contentRect.y - sideState.pageRect.y),
           Math.round(sideState.contentRect.w),
@@ -1087,17 +1127,18 @@ export class WebGPUSpreadRenderer {
     const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
     const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
     const surface = document.createElement("canvas");
-    surface.width = pageWidth;
-    surface.height = pageHeight;
-    const ctx = get2dContext(surface, { willReadFrequently: true });
+    surface.width = pageWidth * PAGE_SURFACE_SCALE;
+    surface.height = pageHeight * PAGE_SURFACE_SCALE;
+    const ctx = setHighQualitySampling(get2dContext(surface, { willReadFrequently: true }));
+    ctx.scale(PAGE_SURFACE_SCALE, PAGE_SURFACE_SCALE);
     ctx.fillStyle = scene.display.paperColor;
     ctx.fillRect(0, 0, pageWidth, pageHeight);
 
     if (measurement) {
       const processedCanvas = this.#getProcessedCanvas(
         sideState.page,
-        measurement.drawRect.w,
-        measurement.drawRect.h,
+        measurement.drawRect.w * PAGE_SURFACE_SCALE,
+        measurement.drawRect.h * PAGE_SURFACE_SCALE,
         effectEntry
       );
 
@@ -1130,6 +1171,7 @@ export class WebGPUSpreadRenderer {
     }
 
     if (drawKey) {
+      this.#markCanvasDirty(surface);
       pageCache.variants.set(drawKey, surface);
       if (pageCache.variants.size > 8) {
         const oldestKey = pageCache.variants.keys().next().value;
@@ -1137,6 +1179,7 @@ export class WebGPUSpreadRenderer {
       }
     }
 
+    this.#markCanvasDirty(surface);
     return surface;
   }
 
@@ -1172,6 +1215,7 @@ export class WebGPUSpreadRenderer {
     }
 
     drawPageBorder(ctx, scene.margins.pagePxW);
+    this.#markCanvasDirty(canvas);
     this.chromeCache.set(key, canvas);
     if (this.chromeCache.size > 16) {
       const oldestKey = this.chromeCache.keys().next().value;
@@ -1222,8 +1266,17 @@ export class WebGPUSpreadRenderer {
   }
 
   #getTextureResource(sourceCanvas) {
+    const sourceVersion = this.canvasVersions.get(sourceCanvas) || 0;
     const cached = this.textureCache.get(sourceCanvas);
     if (cached && cached.width === sourceCanvas.width && cached.height === sourceCanvas.height) {
+      if (cached.sourceVersion !== sourceVersion) {
+        this.device.queue.copyExternalImageToTexture(
+          { source: sourceCanvas },
+          { texture: cached.texture },
+          [sourceCanvas.width, sourceCanvas.height]
+        );
+        cached.sourceVersion = sourceVersion;
+      }
       return cached;
     }
 
@@ -1244,6 +1297,7 @@ export class WebGPUSpreadRenderer {
       view: texture.createView(),
       width: sourceCanvas.width,
       height: sourceCanvas.height,
+      sourceVersion,
       quadBindGroup: null,
     };
     this.textureCache.set(sourceCanvas, resource);
@@ -1302,10 +1356,12 @@ export class WebGPUSpreadRenderer {
     const base = document.createElement("canvas");
     base.width = previewWidth;
     base.height = previewHeight;
-    get2dContext(base, { willReadFrequently: true }).drawImage(page.srcCanvas, 0, 0, previewWidth, previewHeight);
+    setHighQualitySampling(get2dContext(base, { willReadFrequently: true }))
+      .drawImage(page.srcCanvas, 0, 0, previewWidth, previewHeight);
 
     let out = base;
     for (const effect of effectEntry.pipeline) out = effect(out);
+    this.#markCanvasDirty(out);
 
     pageCache.variants.set(cacheKey, out);
     if (pageCache.variants.size > 8) {
@@ -1316,32 +1372,38 @@ export class WebGPUSpreadRenderer {
     return out;
   }
 
-  #withPass(drawFn) {
+  #markCanvasDirty(canvas) {
+    this.canvasVersions.set(canvas, nextCanvasVersion(this.canvasVersions.get(canvas)));
+  }
+
+  #withFrame(drawFn) {
     const encoder = this.device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
+    const targetView = this.context.getCurrentTexture().createView();
+    drawFn(encoder, targetView);
+    this.device.queue.submit([encoder.finish()]);
+  }
+
+  #beginPass(encoder, targetView, { clearColor = true, clearDepth = true } = {}) {
+    return encoder.beginRenderPass({
       colorAttachments: [{
-        view: this.context.getCurrentTexture().createView(),
+        view: targetView,
         clearValue: {
           r: this.clearColor[0],
           g: this.clearColor[1],
           b: this.clearColor[2],
           a: this.clearColor[3],
         },
-        loadOp: "clear",
+        loadOp: clearColor ? "clear" : "load",
         storeOp: "store",
       }],
       depthStencilAttachment: this.depthView
         ? {
             view: this.depthView,
             depthClearValue: 1,
-            depthLoadOp: "clear",
+            depthLoadOp: clearDepth ? "clear" : "load",
             depthStoreOp: "store",
           }
         : undefined,
     });
-
-    drawFn(pass);
-    pass.end();
-    this.device.queue.submit([encoder.finish()]);
   }
 }

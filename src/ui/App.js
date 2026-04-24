@@ -42,10 +42,12 @@ export class App {
       preserveRatio: false,
       ratioSameAsPage: true,
     };
+    this.wheelDeltaRemainder = 0;
     this.listeners = [];
     this.dragHandle = null;
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.animationCompletionScheduled = false;
+    this.animationDirection = 0;
     this.spreadRenderer = new rendererClass(spreadCanvas);
     globalThis.__rendererBackend = this.spreadRenderer.backendName;
     document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
@@ -627,14 +629,18 @@ export class App {
     if (!this.lastMargins || !this.book.pages.length) {
       this.uiState.currentSpread = clampedTarget;
       this.uiState.effectiveSpread = clampedTarget;
+      this.animationDirection = 0;
       this.spreadRenderer.stopAnimation();
       this.redraw();
       return;
     }
 
     const fromSpread = this.getEffectiveSpread();
-    this.uiState.effectiveSpread = clampedTarget;
     const direction = clampedTarget > fromSpread ? 1 : -1;
+    if (this.spreadRenderer.isAnimating && this.animationDirection && direction !== this.animationDirection) return;
+
+    this.uiState.effectiveSpread = clampedTarget;
+    this.animationDirection = direction;
     const fromCanvas = this.createSpreadSnapshot(fromSpread);
     const toCanvas = this.createSpreadSnapshot(clampedTarget);
     this.overlayCanvas.style.visibility = "hidden";
@@ -643,6 +649,7 @@ export class App {
       ? null
       : () => {
           this.animationCompletionScheduled = false;
+          this.animationDirection = 0;
           this.uiState.currentSpread = this.uiState.effectiveSpread;
           this.overlayCanvas.style.visibility = "";
           this.redraw();
@@ -788,6 +795,8 @@ export class App {
     }
 
     this.lazyPageLoader.reset();
+    this.animationCompletionScheduled = false;
+    this.animationDirection = 0;
     this.uiState.currentSpread = 0;
     this.uiState.effectiveSpread = 0;
     this.uiState.editingPageIdx = 0;
@@ -813,6 +822,8 @@ export class App {
   switchMode(mode) {
     if (mode === this.uiState.appMode) return;
     this.spreadRenderer.stopAnimation();
+    this.animationCompletionScheduled = false;
+    this.animationDirection = 0;
     this.overlayCanvas.style.visibility = "";
     this.clearListeners();
     this.uiState.appMode = mode;
@@ -894,13 +905,29 @@ export class App {
 
   handleWheel(event) {
     if (!this.book.pages.length) return;
-    const now = performance.now();
-    if (this.lastWheelFlip && now - this.lastWheelFlip < 400) return;
-    this.lastWheelFlip = now;
-    const base = this.getEffectiveSpread();
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
+      ? 120
+      : event.deltaMode === WheelEvent.DOM_DELTA_LINE
+        ? 3
+        : 1;
+    const normalizedDelta = event.deltaY / unit;
+    this.wheelDeltaRemainder += Math.abs(normalizedDelta) >= 1
+      ? Math.sign(normalizedDelta)
+      : normalizedDelta;
+
+    let base = this.getEffectiveSpread();
     const max = this.book.numSpreads() - 1;
-    if (event.deltaY > 0 && base < max) this.navigateTo(base + 1);
-    if (event.deltaY < 0 && base > 0) this.navigateTo(base - 1);
+    if (this.wheelDeltaRemainder >= 1 && base < max) {
+      this.wheelDeltaRemainder = 0;
+      this.navigateTo(base + 1);
+    } else if (this.wheelDeltaRemainder <= -1 && base > 0) {
+      this.wheelDeltaRemainder = 0;
+      this.navigateTo(base - 1);
+    }
+
+    if ((base === 0 && this.wheelDeltaRemainder < 0) || (base === max && this.wheelDeltaRemainder > 0)) {
+      this.wheelDeltaRemainder = 0;
+    }
   }
 
   handleCanvasMouseDown(event) {

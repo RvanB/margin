@@ -1,8 +1,15 @@
 import { fillLorem } from "./text.js";
 import { drawPageBorder } from "./primitives.js";
 
+const TURN_EASING_POWER = 4;
+
 function get2dContext(canvas, options) {
   return canvas.getContext("2d", options);
+}
+
+function easeTurnProgress(progress) {
+  const t = Math.max(0, Math.min(1, progress));
+  return 1 - Math.pow(1 - t, TURN_EASING_POWER);
 }
 
 export class SpreadRenderer {
@@ -298,12 +305,13 @@ export class SpreadRenderer {
     const landAnimations = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / 420);
-      const phaseProgress = progress < 0.5 ? progress / 0.5 : (progress - 0.5) / 0.5;
+      const progress = Math.min(1, (now - animation.start) / 1000);
+      const easedProgress = easeTurnProgress(progress);
+      const phaseProgress = easedProgress < 0.5 ? easedProgress / 0.5 : (easedProgress - 0.5) / 0.5;
 
       if (progress < 1) {
         remaining.push(animation);
-        if (progress < 0.5) {
+        if (easedProgress < 0.5) {
           liftAnimations.push({ animation, liftW: Math.max(0, pageWidth * (1 - phaseProgress)) });
         } else {
           landAnimations.push({ animation, landW: Math.max(0, pageWidth * phaseProgress) });
