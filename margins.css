@@ -8,6 +8,8 @@ body {
   display: flex;
   height: 100vh;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 #sidebar {
@@ -100,6 +102,11 @@ select, input[type="number"] {
   -webkit-appearance: none;
 }
 
+input, textarea, select {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 select { cursor: pointer; }
 
 input[type="color"] {
@@ -152,6 +159,8 @@ input[type="range"] {
   accent-color: #000;
   cursor: pointer;
   height: 14px;
+  position: relative;
+  z-index: 0;
 }
 
 .slider-ends {
@@ -160,6 +169,7 @@ input[type="range"] {
   font-size: 9px;
   color: #666;
   margin-top: 2px;
+  pointer-events: none;
 }
 
 .content-toggle {
@@ -167,9 +177,16 @@ input[type="range"] {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  margin-top: 12px;
+  margin-top: 18px;
+  padding-top: 6px;
   position: relative;
-  z-index: 1;
+  z-index: 2;
+}
+
+.content-toggle input {
+  position: relative;
+  z-index: 2;
+  flex-shrink: 0;
 }
 
 /* computed */

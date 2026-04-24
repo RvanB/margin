@@ -160,6 +160,17 @@ function syncInputs() {
   if (sameAsPage) ratioInput.value = (get("pw") / get("ph")).toFixed(3);
 }
 
+function applyVdGLayoutValues() {
+  const pw = get("pw"), ph = get("ph");
+  const b  = pw / 9;
+  document.getElementById("b-slider").value  = b.toFixed(3);
+  document.getElementById("m-inner").value   = "1";
+  document.getElementById("m-top").value     = (ph / pw).toFixed(3);
+  document.getElementById("m-bottom").value  = (2 * ph / pw).toFixed(3);
+  document.getElementById("ratio").value     = (pw / ph).toFixed(3);
+  document.getElementById("ratio-same-as-page").checked = true;
+}
+
 function compute() {
   syncInputs();
   const pw = get("pw"), ph = get("ph"), r = get("ratio"), b = get("b-slider");
@@ -1195,6 +1206,7 @@ function initLayoutListeners() {
     document.getElementById("pw").value = w;
     document.getElementById("ph").value = h;
     document.getElementById("page-ratio").value = (w / h).toFixed(3);
+    applyVdGLayoutValues();
     draw();
   });
 
@@ -1241,14 +1253,7 @@ function initLayoutListeners() {
   addListener("preserve-ratio", "change", draw);
 
   addListener("vdg-snap", "click", function () {
-    const pw = get("pw"), ph = get("ph");
-    const b  = pw / 9;
-    document.getElementById("b-slider").value  = b.toFixed(3);
-    document.getElementById("m-inner").value   = "1";
-    document.getElementById("m-top").value     = (ph / pw).toFixed(3);
-    document.getElementById("m-bottom").value  = (2 * ph / pw).toFixed(3);
-    document.getElementById("ratio").value     = (pw / ph).toFixed(3);
-    document.getElementById("ratio-same-as-page").checked = true;
+    applyVdGLayoutValues();
     draw();
   });
 
@@ -1897,6 +1902,12 @@ canvas.addEventListener("mouseleave", () => {
   }
 });
 
+canvasArea.addEventListener("mousedown", e => {
+  if (appMode !== "content") return;
+  if (e.target !== canvasArea) return;
+  switchMode("layout");
+});
+
 // ── Strip drag-and-drop (append pages) ───────────────────────────────────────
 
 async function appendFiles(files) {
@@ -1978,17 +1989,37 @@ document.addEventListener("drop", e => {
 // Arrow key spread navigation + Cmd+A select-all
 document.addEventListener("keydown", e => {
   if (e.target.matches("input, select, textarea")) return;
+  const key = typeof e.key === "string" ? e.key.toLowerCase() : e.key;
   const base = getEffectiveSpread();
   const max  = numSpreads() - 1;
-  if (e.key === "ArrowLeft"  && base > 0)   animateToSpread(base - 1);
-  if (e.key === "ArrowRight" && base < max) animateToSpread(base + 1);
-  if ((e.metaKey || e.ctrlKey) && e.key === "a" && appMode === "content" && contentState.pages.length) {
+  if (key === "arrowleft"  && base > 0)   animateToSpread(base - 1);
+  if (key === "arrowright" && base < max) animateToSpread(base + 1);
+  if ((e.metaKey || e.ctrlKey) && key === "a" && contentState.pages.length) {
     e.preventDefault();
+    e.stopPropagation();
     contentState.selectedPageIdxs = new Set(contentState.pages.map((_, i) => i));
-    syncPageUI();
-    updateSpreadNav();
+    if (appMode === "layout") {
+      switchMode("content");
+    } else {
+      syncPageUI();
+      updateSpreadNav();
+      drawContent();
+    }
   }
-});
+  if (!e.metaKey && !e.ctrlKey && !e.altKey && appMode === "layout") {
+    const toggleId = key === "m"
+      ? "show-margin-arrows"
+      : key === "c"
+        ? "show-layout-content"
+        : key === "v"
+          ? "vdg"
+          : null;
+    if (toggleId) {
+      e.preventDefault();
+      document.getElementById(toggleId)?.click();
+    }
+  }
+}, true);
 
 // Scroll wheel spread navigation
 let _lastWheelFlip = 0;
@@ -2008,14 +2039,14 @@ document.querySelectorAll(".mode-tab").forEach(btn =>
   btn.addEventListener("click", () => switchMode(btn.dataset.mode))
 );
 
-// Initialize layout defaults, then enter content mode on load
+// Initialize layout mode on load
 (function init() {
   const tpl     = document.getElementById("tpl-layout");
   const toolbar = document.getElementById("toolbar");
   toolbar.appendChild(tpl.content.cloneNode(true));
   htmx.process(toolbar);
+  applyVdGLayoutValues();
   initLayoutListeners();
   draw();
   renderPageStrip();
-  switchMode("content");
 })();
