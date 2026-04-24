@@ -5,7 +5,7 @@ import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } 
 import { loadImageFile } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
 import { loadPdfDocument } from "../loading/pdfLoader.js";
-import { computeMargins, computeScale } from "../rendering/layout.js";
+import { computeLayoutValues, computeMargins, computeScale } from "../rendering/layout.js";
 import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
 import { renderOverlay } from "../rendering/OverlayRenderer.js";
 import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
@@ -129,11 +129,7 @@ export class App {
       this.syncBookLayoutFromInputs();
     }
 
-    const scale = computeScale(
-      this.book.layout,
-      this.canvasArea.clientWidth,
-      this.canvasArea.clientHeight
-    );
+    const scale = this.getRenderScale();
     const margins = computeMargins(this.book.layout, scale);
     this.lastMargins = margins;
     this.uiState.currentSpread = Math.min(this.uiState.currentSpread, this.book.numSpreads() - 1);
@@ -168,6 +164,7 @@ export class App {
     this.overlayCanvas.height = this.spreadCanvas.height;
     this.uiState.spreadSideStates = renderResult.sideStates;
     this.uiState.spreadRects = this.shouldExposeSpreadRects() ? renderResult.spreadRects : null;
+    this.applyCanvasViewport(margins, spreadPages);
 
     if (!this.spreadRenderer.isAnimating) {
       renderOverlay(this.overlayCtx, margins, this.uiState);
@@ -695,7 +692,7 @@ export class App {
       ? computeMargins(this.book.layout, scaleOverride)
       : computeMargins(
           this.book.layout,
-          computeScale(this.book.layout, this.canvasArea.clientWidth, this.canvasArea.clientHeight)
+          this.getRenderScale()
         );
     const pages = this.getRenderableSpreadPages(spreadIndex);
     const effectEntries = {
@@ -733,6 +730,79 @@ export class App {
     }
 
     return snapshot;
+  }
+
+  getRenderScale() {
+    const containerWidth = this.canvasArea.clientWidth;
+    const containerHeight = this.canvasArea.clientHeight;
+    if (this.uiState.appMode !== "content") {
+      return computeScale(this.book.layout, containerWidth, containerHeight);
+    }
+
+    const focusRect = this.getContentFocusRect(this.getRenderableSpreadPages(this.uiState.currentSpread), computeLayoutValues(this.book.layout));
+    if (!focusRect) {
+      return computeScale(this.book.layout, containerWidth, containerHeight);
+    }
+    return Math.min((containerWidth - 64) / focusRect.w, (containerHeight - 64) / focusRect.h);
+  }
+
+  applyCanvasViewport(margins, spreadPages) {
+    const zoomed = this.uiState.appMode === "content" && !!spreadPages;
+    this.canvasArea.classList.toggle("content-zoom", zoomed);
+    if (!zoomed) {
+      this.canvasArea.style.setProperty("--canvas-offset-x", "0px");
+      this.canvasArea.style.setProperty("--canvas-offset-y", "0px");
+      return;
+    }
+
+    const focusRect = this.getContentFocusRect(spreadPages, margins);
+    const offsetX = focusRect
+      ? margins.pagePxW - (focusRect.x + focusRect.w / 2)
+      : 0;
+    const offsetY = focusRect
+      ? margins.pagePxH / 2 - (focusRect.y + focusRect.h / 2)
+      : 0;
+    this.canvasArea.style.setProperty("--canvas-offset-x", `${Math.round(offsetX)}px`);
+    this.canvasArea.style.setProperty("--canvas-offset-y", `${Math.round(offsetY)}px`);
+  }
+
+  getContentFocusRect(spreadPages, metrics) {
+    if (!spreadPages) return null;
+    const selectedSide = spreadPages.left?.pageIndex === this.uiState.editingPageIdx
+      ? "left"
+      : spreadPages.right?.pageIndex === this.uiState.editingPageIdx
+        ? "right"
+        : spreadPages.left?.pageIndex >= 0
+          ? "left"
+          : spreadPages.right?.pageIndex >= 0
+            ? "right"
+            : null;
+    if (!selectedSide) return null;
+
+    const page = spreadPages[selectedSide]?.page;
+    const pageWidth = "pagePxW" in metrics ? metrics.pagePxW : metrics.pw;
+    const pageHeight = "pagePxH" in metrics ? metrics.pagePxH : metrics.ph;
+    const inner = "innerPx" in metrics ? metrics.innerPx : metrics.inner;
+    const outer = "outerPx" in metrics ? metrics.outerPx : metrics.outer;
+    const top = "topPx" in metrics ? metrics.topPx : metrics.top;
+    const tw = "twPx" in metrics ? metrics.twPx : metrics.tw;
+    const th = "thPx" in metrics ? metrics.thPx : metrics.th;
+
+    if (page?.cover) {
+      return {
+        x: selectedSide === "left" ? 0 : pageWidth,
+        y: 0,
+        w: pageWidth,
+        h: pageHeight,
+      };
+    }
+
+    return {
+      x: selectedSide === "left" ? outer : pageWidth + inner,
+      y: top,
+      w: tw,
+      h: th,
+    };
   }
 
   printCurrentSpread() {

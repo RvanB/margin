@@ -44,3 +44,7 @@ export function computeMargins(layout, scale) {
 export function computeScale(layout, containerW, containerH) {
   return Math.min((containerW - 64) / (2 * layout.pw), (containerH - 64) / layout.ph);
 }
+
+export function computeContentScale(layout, containerW, containerH) {
+  return Math.min((containerW - 64) / layout.pw, (containerH - 64) / layout.ph);
+}
