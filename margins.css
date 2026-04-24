@@ -274,9 +274,22 @@ input[type="range"] {
   justify-content: center;
   padding: 32px;
   min-height: 0;
+  position: relative;
 }
 
-canvas { width: fit-content; max-width: 100%; max-height: 100%; }
+#spread-canvas,
+#overlay-canvas {
+  width: fit-content;
+  max-width: 100%;
+  max-height: 100%;
+}
+
+#overlay-canvas {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  pointer-events: none;
+}
 
 /* ── Page strip ─────────────────────────────────────────────────────────────── */
 

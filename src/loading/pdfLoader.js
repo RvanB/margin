@@ -1,0 +1,58 @@
+function get2dContext(canvas, options) {
+  return canvas.getContext("2d", options);
+}
+
+let pdfjsReady = null;
+
+export function ensurePdfjs() {
+  if (pdfjsReady) return pdfjsReady;
+
+  pdfjsReady = new Promise((resolve, reject) => {
+    const readyKey = `__pdfjsReady${Math.random().toString(36).slice(2)}`;
+    const errorKey = `__pdfjsError${Math.random().toString(36).slice(2)}`;
+
+    globalThis[readyKey] = lib => {
+      delete globalThis[readyKey];
+      delete globalThis[errorKey];
+      lib.GlobalWorkerOptions.workerSrc =
+        "https://unpkg.com/pdfjs-dist@5.6.205/build/pdf.worker.mjs";
+      resolve(lib);
+    };
+
+    globalThis[errorKey] = message => {
+      delete globalThis[readyKey];
+      delete globalThis[errorKey];
+      reject(new Error(message));
+    };
+
+    const script = document.createElement("script");
+    script.type = "module";
+    script.textContent = `
+      import("https://unpkg.com/pdfjs-dist@5.6.205/build/pdf.mjs")
+        .then((lib) => globalThis["${readyKey}"](lib))
+        .catch((error) => globalThis["${errorKey}"](error?.message || "Failed to load PDF.js"));
+    `;
+    script.onerror = () => reject(new Error("Failed to load PDF.js"));
+    document.head.appendChild(script);
+  });
+
+  return pdfjsReady;
+}
+
+export async function loadPdfDocument(buffer) {
+  const lib = await ensurePdfjs();
+  return lib.getDocument({ data: buffer }).promise;
+}
+
+export async function renderPdfPage(pdfDoc, pageNum, scale) {
+  const page = await pdfDoc.getPage(pageNum);
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement("canvas");
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  await page.render({
+    canvasContext: get2dContext(canvas, { willReadFrequently: true }),
+    viewport,
+  }).promise;
+  return canvas;
+}
