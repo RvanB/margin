@@ -600,16 +600,6 @@ export class WebGPUSpreadRenderer {
               @group(0) @binding(1) var tex: texture_2d<f32>;
               @group(0) @binding(2) var<uniform> uniforms: Uniforms;
 
-              fn bayer4(index: u32) -> f32 {
-                let values = array<f32, 16>(
-                  0.0, 8.0, 2.0, 10.0,
-                  12.0, 4.0, 14.0, 6.0,
-                  3.0, 11.0, 1.0, 9.0,
-                  15.0, 7.0, 13.0, 5.0
-                );
-                return values[index];
-              }
-
               fn pointInQuad(hit: vec3<f32>, p0: vec3<f32>, p1: vec3<f32>, p3: vec3<f32>) -> bool {
                 let uAxis = p1 - p0;
                 let vAxis = p3 - p0;
@@ -675,11 +665,7 @@ export class WebGPUSpreadRenderer {
                 let diffuse = abs(dot(normal, lightDir));
                 let shade = 0.82 + 0.18 * diffuse;
                 let shadow = computeShadow(input.worldPos);
-                let x = u32(position.x) & 3u;
-                let y = u32(position.y) & 3u;
-                let threshold = (bayer4(y * 4u + x) + 0.5) / 16.0;
-                let shadowBit = select(0.0, 1.0, shadow > threshold);
-                let shadowShade = select(1.0, 0.42, shadowBit > 0.5);
+                let shadowShade = mix(1.0, 0.4, shadow);
                 return vec4<f32>(texel.rgb * shade * shadowShade, texel.a);
               }
             `,
@@ -748,24 +734,8 @@ export class WebGPUSpreadRenderer {
         fragment: {
           module: this.device.createShaderModule({
             code: `
-              fn bayer4(index: u32) -> f32 {
-                let values = array<f32, 16>(
-                  0.0, 8.0, 2.0, 10.0,
-                  12.0, 4.0, 14.0, 6.0,
-                  3.0, 11.0, 1.0, 9.0,
-                  15.0, 7.0, 13.0, 5.0
-                );
-                return values[index];
-              }
-
               @fragment
               fn main(@builtin(position) position: vec4<f32>, @location(0) color: vec4<f32>) -> @location(0) vec4<f32> {
-                let x = u32(position.x) & 3u;
-                let y = u32(position.y) & 3u;
-                let threshold = (bayer4(y * 4u + x) + 0.5) / 16.0;
-                if (color.a <= threshold) {
-                  discard;
-                }
                 return vec4<f32>(color.rgb, 1.0);
               }
             `,
@@ -887,7 +857,7 @@ export class WebGPUSpreadRenderer {
     const completed = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / 420);
+      const progress = Math.min(1, (now - animation.start) / 360);
       if (progress >= 1) {
         this.baseScene = animation.toScene;
         completed.push(animation);
