@@ -1,9 +1,10 @@
 export class PageStrip {
-  constructor(container, { onPageClick, getEffectEntry, getDisplay }) {
+  constructor(container, { onPageClick, getEffectEntry, getDisplay, getLayout }) {
     this.container = container;
     this.onPageClick = onPageClick;
     this.getEffectEntry = getEffectEntry;
     this.getDisplay = getDisplay;
+    this.getLayout = getLayout;
     this.thumbnailCache = new WeakMap();
   }
 
@@ -44,7 +45,7 @@ export class PageStrip {
       thumb.classList.toggle("active", isActive);
       thumb.classList.toggle("selected", isSelected);
 
-      const thumbCanvas = this.#makeThumbCanvas(page, renderer);
+      const thumbCanvas = this.#makeThumbCanvas(page, index, renderer);
       const label = document.createElement("span");
       label.textContent = String(index + 1);
       thumb.append(thumbCanvas, label);
@@ -60,14 +61,17 @@ export class PageStrip {
     const thumb = this.container.querySelectorAll(".strip-thumb")[pageIndex];
     if (!thumb) return;
     this.invalidateThumbnail(page);
-    const nextCanvas = this.#makeThumbCanvas(page, renderer);
+    const nextCanvas = this.#makeThumbCanvas(page, pageIndex, renderer);
     const currentCanvas = thumb.querySelector("canvas");
     if (currentCanvas) currentCanvas.replaceWith(nextCanvas);
   }
 
-  #makeThumbCanvas(page, renderer) {
+  #makeThumbCanvas(page, pageIndex, renderer) {
     const thumbHeight = 56;
-    const thumbWidth = Math.max(1, Math.round(thumbHeight * (page.aspectRatio || 1)));
+    const layout = this.getLayout();
+    const thumbWidth = layout
+      ? Math.max(1, Math.round(thumbHeight * (layout.pw / layout.ph)))
+      : Math.max(1, Math.round(thumbHeight * (page.aspectRatio || 1)));
     const canvas = document.createElement("canvas");
     canvas.width = thumbWidth;
     canvas.height = thumbHeight;
@@ -76,20 +80,25 @@ export class PageStrip {
     ctx.fillStyle = display.paperColor;
     ctx.fillRect(0, 0, thumbWidth, thumbHeight);
 
-    const source = this.#getThumbnailSource(page, renderer);
+    const source = this.#getThumbnailSource(page, pageIndex, renderer);
     if (source) ctx.drawImage(source, 0, 0, thumbWidth, thumbHeight);
     return canvas;
   }
 
-  #getThumbnailSource(page, renderer) {
+  #getThumbnailSource(page, pageIndex, renderer) {
     const display = this.getDisplay();
     const effectEntry = this.getEffectEntry(page);
-    const key = `${effectEntry.key}|${display.paperColor}|${display.contentBlendMode}`;
+    const layout = this.getLayout();
+    const side = pageIndex % 2 === 1 ? "left" : "right";
+    const layoutKey = layout
+      ? `${layout.pw},${layout.ph},${layout.ratio},${layout.b},${layout.mInner},${layout.mTop},${layout.mBottom}`
+      : "";
+    const key = `${effectEntry.key}|${display.paperColor}|${display.contentBlendMode}|${layoutKey}|${side}`;
     const cached = this.thumbnailCache.get(page);
 
-    if (page.srcCanvas && (!cached || cached.key !== key)) {
-      const canvas = renderer.getThumbnail(page, effectEntry, display);
-      const next = { key, canvas };
+    const sourceCanvas = page.placedPreviewCanvas;
+    if (sourceCanvas && (!cached || cached.key !== key)) {
+      const next = { key, canvas: sourceCanvas };
       this.thumbnailCache.set(page, next);
       return next.canvas;
     }

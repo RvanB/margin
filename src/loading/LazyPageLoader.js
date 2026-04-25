@@ -1,21 +1,34 @@
 import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
+import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
 import { renderPdfPage } from "./pdfLoader.js";
 
 export class LazyPageLoader {
-  constructor(book, onPageReady, { pdfRenderScale = 1.5 } = {}) {
+  constructor(book, onPageReady, { pdfRenderScale = 1.5, pdfPreviewSourceScale = 0.25, pdfPreviewMaxEdge = 96 } = {}) {
     this.book = book;
     this.onPageReady = onPageReady;
     this.pdfRenderScale = pdfRenderScale;
+    this.pdfPreviewSourceScale = pdfPreviewSourceScale;
+    this.pdfPreviewMaxEdge = pdfPreviewMaxEdge;
     this.lastEnsuredSpread = -1;
+    this.lastEnsuredPreviewZoom = 1;
+    this.previewQueue = [];
+    this.previewQueued = new Set();
+    this.previewRendering = false;
   }
 
   reset() {
     this.lastEnsuredSpread = -1;
+    this.lastEnsuredPreviewZoom = 1;
+    this.previewQueue = [];
+    this.previewQueued.clear();
+    this.previewRendering = false;
   }
 
-  ensureSpreadLoaded(spreadIndex) {
+  ensureSpreadLoaded(spreadIndex, previewZoom = 1, { allowHighRes = true } = {}) {
     this.lastEnsuredSpread = spreadIndex;
+    this.lastEnsuredPreviewZoom = Math.max(1, previewZoom || 1);
+    const targetPdfRenderScale = this.pdfRenderScale * this.lastEnsuredPreviewZoom;
     const spreadCount = this.book.numSpreads();
     for (
       let spread = Math.max(0, spreadIndex - 1);
@@ -23,8 +36,14 @@ export class LazyPageLoader {
       spread += 1
     ) {
       const { left, right } = this.book.spreadPageEntries(spread);
-      if (left.pageIndex >= 0) this.#ensurePageLoaded(left.pageIndex);
-      if (right.pageIndex >= 0 && right.pageIndex < this.book.pages.length) this.#ensurePageLoaded(right.pageIndex);
+      if (left.pageIndex >= 0) {
+        this.#ensurePreviewLoaded(left.pageIndex, spread === spreadIndex);
+        if (allowHighRes) this.#ensurePageLoaded(left.pageIndex, targetPdfRenderScale);
+      }
+      if (right.pageIndex >= 0 && right.pageIndex < this.book.pages.length) {
+        this.#ensurePreviewLoaded(right.pageIndex, spread === spreadIndex);
+        if (allowHighRes) this.#ensurePageLoaded(right.pageIndex, targetPdfRenderScale);
+      }
     }
 
     const keep = new Set();
@@ -44,21 +63,88 @@ export class LazyPageLoader {
     });
   }
 
-  async #ensurePageLoaded(pageIndex) {
+  warmAllPreviews() {
+    for (let pageIndex = 0; pageIndex < this.book.pages.length; pageIndex += 1) {
+      this.#ensurePreviewLoaded(pageIndex);
+    }
+  }
+
+  #ensurePreviewLoaded(pageIndex, prioritize = false) {
     const page = this.book.pages[pageIndex];
-    if (!page || page.srcCanvas || page.loading || page.source?.type !== "pdf") return;
+    if (!page || page.source?.type !== "pdf" || page.previewCanvas || this.previewQueued.has(pageIndex)) return;
+    this.previewQueued.add(pageIndex);
+    if (prioritize) this.previewQueue.unshift(pageIndex);
+    else this.previewQueue.push(pageIndex);
+    this.#drainPreviewQueue();
+  }
+
+  async #drainPreviewQueue() {
+    if (this.previewRendering) return;
+    this.previewRendering = true;
+    while (this.previewQueue.length) {
+      const pageIndex = this.previewQueue.shift();
+      this.previewQueued.delete(pageIndex);
+      const page = this.book.pages[pageIndex];
+      if (!page || page.previewCanvas || page.source?.type !== "pdf") continue;
+      try {
+        const previewSource = await renderPdfPage(
+          page.source.pdfDoc,
+          page.source.pageNum,
+          this.pdfPreviewSourceScale
+        );
+        if (!page.cropInitialized) {
+          page.setCropFor(
+            previewSource,
+            autoCrop(applyEffectsToCanvas(previewSource, page.effects), page.tolerance)
+          );
+          page.cropInitialized = true;
+        }
+        const previewCanvas = await downscaleCanvasToMaxEdge(previewSource, this.pdfPreviewMaxEdge);
+        page.previewCanvas = previewCanvas;
+        if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewCanvas;
+        this.onPageReady?.(pageIndex);
+      } catch (error) {
+        console.error(`Failed to render PDF preview ${page.source?.pageNum}:`, error);
+      }
+    }
+    this.previewRendering = false;
+  }
+
+  async #ensurePageLoaded(pageIndex, targetPdfRenderScale = this.pdfRenderScale) {
+    const page = this.book.pages[pageIndex];
+    const requestedScale = Math.max(this.pdfRenderScale, targetPdfRenderScale || this.pdfRenderScale);
+    if (!page || page.source?.type !== "pdf") return;
+    page.requestedPdfRenderScale = Math.max(page.requestedPdfRenderScale || 0, requestedScale);
+    if (page.loading) return;
+    if (page.srcCanvas && (page.loadedPdfRenderScale || this.pdfRenderScale) >= requestedScale) return;
 
     page.loading = true;
     try {
-      const canvas = await renderPdfPage(page.source.pdfDoc, page.source.pageNum, this.pdfRenderScale);
+      const renderScale = Math.max(this.pdfRenderScale, page.requestedPdfRenderScale || requestedScale);
+      const prevCanvas = page.srcCanvas;
+      const prevSource = prevCanvas || page.previewCanvas;
+      const prevWidth = prevSource?.width || 0;
+      const prevHeight = prevSource?.height || 0;
+      const canvas = await renderPdfPage(page.source.pdfDoc, page.source.pageNum, renderScale);
       page.srcCanvas = canvas;
+      if (!page.previewCanvas) {
+        const previewCanvas = await downscaleCanvasToMaxEdge(canvas, this.pdfPreviewMaxEdge);
+        page.previewCanvas = previewCanvas;
+        if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewCanvas;
+      } else if (!page.thumbnailSourceCanvas) {
+        page.thumbnailSourceCanvas = page.previewCanvas;
+      }
+      page.loadedPdfRenderScale = renderScale;
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
       if (!page.cropInitialized) {
-        page.crop = autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance);
+        page.setCropFor(canvas, autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance));
         page.cropInitialized = true;
       }
       this.onPageReady?.(pageIndex);
+      if ((page.requestedPdfRenderScale || renderScale) > renderScale + 1e-3) {
+        setTimeout(() => this.#ensurePageLoaded(pageIndex, page.requestedPdfRenderScale), 0);
+      }
     } catch (error) {
       page.loading = false;
       console.error(`Failed to render PDF page ${page.source?.pageNum}:`, error);
@@ -69,5 +155,7 @@ export class LazyPageLoader {
     const page = this.book.pages[pageIndex];
     if (!page || !page.srcCanvas || page.source?.type !== "pdf") return;
     page.srcCanvas = null;
+    page.loadedPdfRenderScale = 0;
+    page.requestedPdfRenderScale = 0;
   }
 }

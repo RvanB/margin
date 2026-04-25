@@ -60,24 +60,62 @@ function getSaturation(r, g, b) {
   return max === 0 ? 0 : (max - min) / max;
 }
 
-export function bwEffect(threshold) {
-  const safeThreshold = Math.max(0, Math.min(100, Math.round(Number.isFinite(threshold) ? threshold : 0)));
-  if (safeThreshold <= 0) return null;
+function getHue(r, g, b) {
+  const rf = r / 255;
+  const gf = g / 255;
+  const bf = b / 255;
+  const max = Math.max(rf, gf, bf);
+  const min = Math.min(rf, gf, bf);
+  const delta = max - min;
+  if (delta <= 1e-6) return 0;
+
+  let hue;
+  if (max === rf) hue = ((gf - bf) / delta) % 6;
+  else if (max === gf) hue = (bf - rf) / delta + 2;
+  else hue = (rf - gf) / delta + 4;
+  return ((hue * 60) + 360) % 360;
+}
+
+export function getSelectionGate(selection = {}, legacyThreshold = null) {
+  return {
+    satLow: Number.isFinite(selection.selectionSatLow) ? selection.selectionSatLow : 0,
+    satHigh: Number.isFinite(selection.selectionSatHigh)
+      ? selection.selectionSatHigh
+      : (Number.isFinite(legacyThreshold) ? legacyThreshold : 100),
+    hueLow: Number.isFinite(selection.selectionHueLow) ? selection.selectionHueLow : 0,
+    hueHigh: Number.isFinite(selection.selectionHueHigh) ? selection.selectionHueHigh : 360,
+  };
+}
+
+function hueMatches(hue, hueLow, hueHigh) {
+  const low = hueLow % 360;
+  const high = hueHigh === 360 ? 360 : hueHigh % 360;
+  if (hueHigh === 360 && hueLow === 0) return true;
+  if (low <= high) return hue >= low && hue <= high;
+  return hue >= low || hue <= high;
+}
+
+function pixelMatchesSelection(r, g, b, selection) {
+  const saturation = 100 * getSaturation(r, g, b);
+  if (saturation < selection.satLow || saturation > selection.satHigh) return false;
+  return hueMatches(getHue(r, g, b), selection.hueLow, selection.hueHigh);
+}
+
+export function bwEffect(selection, enabled = false) {
+  if (!enabled) return null;
+  const gate = getSelectionGate(selection, selection?.bwThreshold ?? 100);
 
   return canvas => {
     const out = cloneCanvas(canvas);
     const outCtx = get2dContext(out, { willReadFrequently: true });
     const imageData = outCtx.getImageData(0, 0, out.width, out.height);
     const { data } = imageData;
-    const saturationThreshold = safeThreshold / 100;
 
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i];
       const g = data[i + 1];
       const b = data[i + 2];
-      const saturation = getSaturation(r, g, b);
-
-      if (saturation <= saturationThreshold) {
+      if (pixelMatchesSelection(r, g, b, gate)) {
         const gray = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
         data[i] = gray;
         data[i + 1] = gray;
@@ -90,11 +128,10 @@ export function bwEffect(threshold) {
   };
 }
 
-export function levelsEffect(blackPoint, grayPoint, whitePoint, threshold = 100) {
+export function levelsEffect(blackPoint, grayPoint, whitePoint, selection = {}) {
   const levels = normalizeLevels(blackPoint, grayPoint, whitePoint);
-  const safeThreshold = Math.max(0, Math.min(100, Math.round(Number.isFinite(threshold) ? threshold : 100)));
   if (levels.black === 0 && levels.gray === 128 && levels.white === 255) return null;
-  const saturationThreshold = safeThreshold / 100;
+  const gate = getSelectionGate(selection, selection?.bwThreshold ?? 100);
 
   return canvas => {
     const out = cloneCanvas(canvas);
@@ -103,11 +140,50 @@ export function levelsEffect(blackPoint, grayPoint, whitePoint, threshold = 100)
     const { data } = imageData;
 
     for (let i = 0; i < data.length; i += 4) {
-      const saturation = getSaturation(data[i], data[i + 1], data[i + 2]);
-      if (saturation > saturationThreshold) continue;
+      if (!pixelMatchesSelection(data[i], data[i + 1], data[i + 2], gate)) continue;
       data[i] = applyLevelsChannel(data[i], levels.black, levels.gray, levels.white);
       data[i + 1] = applyLevelsChannel(data[i + 1], levels.black, levels.gray, levels.white);
       data[i + 2] = applyLevelsChannel(data[i + 2], levels.black, levels.gray, levels.white);
+    }
+
+    outCtx.putImageData(imageData, 0, 0);
+    return out;
+  };
+}
+
+export function selectionEffects(selection = {}, { bwEnabled = false, black = 0, gray = 128, white = 255 } = {}) {
+  const levels = normalizeLevels(black, gray, white);
+  const hasLevels = !(levels.black === 0 && levels.gray === 128 && levels.white === 255);
+  if (!bwEnabled && !hasLevels) return null;
+  const gate = getSelectionGate(selection, selection?.bwThreshold ?? 100);
+
+  return canvas => {
+    const out = cloneCanvas(canvas);
+    const outCtx = get2dContext(out, { willReadFrequently: true });
+    const imageData = outCtx.getImageData(0, 0, out.width, out.height);
+    const { data } = imageData;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const selected = pixelMatchesSelection(data[i], data[i + 1], data[i + 2], gate);
+      if (!selected) continue;
+
+      let r = data[i];
+      let g = data[i + 1];
+      let b = data[i + 2];
+      if (bwEnabled) {
+        const grayValue = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+        r = grayValue;
+        g = grayValue;
+        b = grayValue;
+      }
+      if (hasLevels) {
+        r = applyLevelsChannel(r, levels.black, levels.gray, levels.white);
+        g = applyLevelsChannel(g, levels.black, levels.gray, levels.white);
+        b = applyLevelsChannel(b, levels.black, levels.gray, levels.white);
+      }
+      data[i] = r;
+      data[i + 1] = g;
+      data[i + 2] = b;
     }
 
     outCtx.putImageData(imageData, 0, 0);

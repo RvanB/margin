@@ -22,8 +22,18 @@
 
 <div id="canvas-wrap">
   <div id="canvas-area">
-    <canvas id="spread-canvas"></canvas>
-    <canvas id="overlay-canvas"></canvas>
+    <div id="canvas-area-inner">
+      <div id="canvas-stage">
+        <canvas id="spread-canvas"></canvas>
+        <canvas id="overlay-canvas"></canvas>
+      </div>
+    </div>
+  </div>
+  <div id="canvas-controls">
+    <div id="canvas-zoom-controls" aria-label="Canvas zoom">
+      <button id="canvas-zoom-in" type="button" aria-label="Zoom in">+</button>
+      <button id="canvas-zoom-out" type="button" aria-label="Zoom out">-</button>
+    </div>
   </div>
   <div id="page-strip"></div>
 </div>
@@ -157,6 +167,22 @@
 <template id="tpl-content">
 
   <div class="section" id="trim-section" style="display:none">
+    <div id="measure-header">
+      <span class="section-label" style="margin:0">Measure</span>
+      <span id="measure-status">reference</span>
+    </div>
+    <div id="measure-row">
+      <input type="color" id="measure-color" value="#ffffff">
+      <div id="measure-summary">
+        <div id="measure-hex">#ffffff</div>
+        <div id="measure-rgb">rgb 255, 255, 255</div>
+      </div>
+    </div>
+    <div class="measure-grid">
+      <div class="computed-row"><span>hue</span><span id="measure-hue">0°</span></div>
+      <div class="computed-row"><span>sat</span><span id="measure-sat">0%</span></div>
+      <div class="computed-row"><span>value</span><span id="measure-value">100%</span></div>
+    </div>
     <label class="content-toggle">
       <input type="checkbox" id="cover-check">
       <span style="font-size:11px">Cover / full bleed</span>
@@ -177,12 +203,33 @@
       <button id="neutralize-clear" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:1px solid #000;padding:2px 6px;cursor:pointer">Clear</button>
       <input type="color" id="neutralize-color" value="#ffffff">
     </div>
-    <div id="bw-header" style="margin-top:12px">
-      <span class="section-label" style="margin:0">Black &amp; white</span>
-      <span id="bw-val"></span>
+    <div id="selection-header" style="margin-top:12px">
+      <span class="section-label" style="margin:0">Selection</span>
     </div>
-    <input type="range" id="bw-slider" min="0" max="100" step="1" value="0">
-    <div class="slider-ends"><span>color</span><span>all gray</span></div>
+    <div class="dim-row" style="align-items:center">
+      <label>sat low</label>
+      <input type="range" id="selection-sat-low" min="0" max="100" step="any" value="0">
+      <input type="number" id="selection-sat-low-num" class="value-input" min="0" max="100" step="0.1" value="0">
+    </div>
+    <div class="dim-row" style="align-items:center">
+      <label>sat high</label>
+      <input type="range" id="selection-sat-high" min="0" max="100" step="any" value="100">
+      <input type="number" id="selection-sat-high-num" class="value-input" min="0" max="100" step="0.1" value="100">
+    </div>
+    <div class="dim-row" style="align-items:center">
+      <label>hue low</label>
+      <input type="range" id="selection-hue-low" min="0" max="360" step="any" value="0">
+      <input type="number" id="selection-hue-low-num" class="value-input" min="0" max="360" step="0.1" value="0">
+    </div>
+    <div class="dim-row" style="align-items:center">
+      <label>hue high</label>
+      <input type="range" id="selection-hue-high" min="0" max="360" step="any" value="360">
+      <input type="number" id="selection-hue-high-num" class="value-input" min="0" max="360" step="0.1" value="360">
+    </div>
+    <label class="content-toggle" style="margin-top:12px;padding-top:0">
+      <input type="checkbox" id="bw-enabled">
+      <span style="font-size:11px">Black &amp; white</span>
+    </label>
     <div id="levels-header" style="margin-top:12px">
       <span class="section-label" style="margin:0">Levels</span>
     </div>

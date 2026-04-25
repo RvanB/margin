@@ -167,10 +167,10 @@ function buildSideStates(margins, pages, hasPlacedPages) {
 }
 
 function measurePageDraw(page, rect, mode) {
-  const sourceCanvas = page?.srcCanvas;
+  const sourceCanvas = page?.displayCanvas;
   if (!sourceCanvas) return null;
 
-  const { crop } = page;
+  const crop = page.getCropFor(sourceCanvas);
   const sourceWidth = sourceCanvas.width - crop.left - crop.right;
   const sourceHeight = sourceCanvas.height - crop.top - crop.bottom;
   if (sourceWidth <= 0 || sourceHeight <= 0) return null;
@@ -291,8 +291,12 @@ export class WebGLSpreadRenderer {
     return { canvas: offscreen, ...result };
   }
 
-  getThumbnail(page, effectEntry, display) {
-    return this.thumbnailRenderer.getThumbnail(page, effectEntry, display);
+  getThumbnail(page, effectEntry, display, options = {}) {
+    return this.thumbnailRenderer.getThumbnail(page, effectEntry, display, options);
+  }
+
+  getPlacedPagePreview(page, effectEntry, display, options = {}) {
+    return this.thumbnailRenderer.getPlacedPagePreview(page, effectEntry, display, options);
   }
 
   animateTo(from, to, direction, onDone) {
@@ -368,9 +372,31 @@ export class WebGLSpreadRenderer {
 
     if (margins.ok) {
       for (const [sideName, sideState] of Object.entries(sideStates)) {
-        if (!sideState.page?.srcCanvas) continue;
+        if (!sideState.page?.displayCanvas && !sideState.page?.placedPreviewCanvas) continue;
         const effectEntry = effects[sideName];
         const measurement = measurePageDraw(sideState.page, sideState.contentRect, sideState.contentMode);
+        if (!sideState.page.srcCanvas && sideState.page.placedPreviewCanvas) {
+          sideState.drawnRect = measurement?.visibleRect ?? {
+            x: sideState.pageRect.x,
+            y: sideState.pageRect.y,
+            w: sideState.pageRect.w,
+            h: sideState.pageRect.h,
+            fitScale: 1,
+            sw: sideState.page.placedPreviewCanvas.width,
+            sh: sideState.page.placedPreviewCanvas.height,
+          };
+          this.#drawCanvasRegion(
+            target,
+            sideState.page.placedPreviewCanvas,
+            sideState.pageRect,
+            null,
+            null,
+            "source-over",
+            display.paperColor,
+            true
+          );
+          continue;
+        }
         if (!measurement) continue;
         sideState.drawnRect = measurement.visibleRect;
         const processedCanvas = this.#getProcessedCanvas(
@@ -537,16 +563,17 @@ export class WebGLSpreadRenderer {
   }
 
   #getProcessedCanvas(page, targetWidth, targetHeight, effectEntry) {
-    if (!page?.srcCanvas) return null;
+    const sourceCanvas = page?.displayCanvas;
+    if (!sourceCanvas) return null;
 
-    const previewWidth = Math.max(1, Math.min(page.srcCanvas.width, Math.round(targetWidth || page.srcCanvas.width)));
-    const previewHeight = Math.max(1, Math.min(page.srcCanvas.height, Math.round(targetHeight || page.srcCanvas.height)));
+    const previewWidth = Math.max(1, Math.min(sourceCanvas.width, Math.round(targetWidth || sourceCanvas.width)));
+    const previewHeight = Math.max(1, Math.min(sourceCanvas.height, Math.round(targetHeight || sourceCanvas.height)));
     const cacheKey = `${effectEntry.key}|${previewWidth}x${previewHeight}`;
 
     let pageCache = this.effectCache.get(page);
-    if (!pageCache || pageCache.srcCanvas !== page.srcCanvas) {
+    if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
       pageCache = {
-        srcCanvas: page.srcCanvas,
+        srcCanvas: sourceCanvas,
         variants: new Map(),
       };
       this.effectCache.set(page, pageCache);
@@ -558,7 +585,7 @@ export class WebGLSpreadRenderer {
     const base = document.createElement("canvas");
     base.width = previewWidth;
     base.height = previewHeight;
-    get2dContext(base, { willReadFrequently: true }).drawImage(page.srcCanvas, 0, 0, previewWidth, previewHeight);
+    get2dContext(base, { willReadFrequently: true }).drawImage(sourceCanvas, 0, 0, previewWidth, previewHeight);
 
     let out = base;
     for (const effect of effectEntry.pipeline) out = effect(out);

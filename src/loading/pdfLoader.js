@@ -50,9 +50,17 @@ export async function renderPdfPage(pdfDoc, pageNum, scale) {
   const canvas = document.createElement("canvas");
   canvas.width = viewport.width;
   canvas.height = viewport.height;
-  await page.render({
+  const renderTask = page.render({
     canvasContext: get2dContext(canvas, { willReadFrequently: true }),
     viewport,
-  }).promise;
+  });
+  renderTask.onContinue = continueCallback => {
+    if (typeof globalThis.requestIdleCallback === "function") {
+      globalThis.requestIdleCallback(() => continueCallback(), { timeout: 32 });
+    } else {
+      setTimeout(() => continueCallback(), 0);
+    }
+  };
+  await renderTask.promise;
   return canvas;
 }

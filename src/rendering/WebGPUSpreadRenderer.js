@@ -5,7 +5,7 @@ import { SpreadRenderer } from "./SpreadRenderer.js";
 const MAX_SHADOW_OCCLUDERS = 8;
 const TURN_EASING_POWER = 3;
 const TURN_DURATION_MS = 750;
-const PAGE_SURFACE_SCALE = 2;
+const BASE_PAGE_SURFACE_SCALE = 2;
 
 function get2dContext(canvas, options) {
   return canvas.getContext("2d", options);
@@ -104,10 +104,10 @@ function buildSideStates(margins, pages, hasPlacedPages) {
 }
 
 function measurePageDraw(page, rect, mode) {
-  const sourceCanvas = page?.srcCanvas;
+  const sourceCanvas = page?.displayCanvas;
   if (!sourceCanvas) return null;
 
-  const { crop } = page;
+  const crop = page.getCropFor(sourceCanvas);
   const sourceWidth = sourceCanvas.width - crop.left - crop.right;
   const sourceHeight = sourceCanvas.height - crop.top - crop.bottom;
   if (sourceWidth <= 0 || sourceHeight <= 0) return null;
@@ -172,6 +172,19 @@ function buildSpreadRects(sideStates, margins) {
       : null,
     pagePxW: margins.pagePxW,
   };
+}
+
+function getPageSurfaceScale(pageRect, measurement, previewZoom = 1) {
+  if (!pageRect || !measurement) return BASE_PAGE_SURFACE_SCALE;
+  const sourceWidthRatio = measurement.drawRect.w > 0
+    ? measurement.visibleRect.sw / measurement.drawRect.w
+    : BASE_PAGE_SURFACE_SCALE;
+  const sourceHeightRatio = measurement.drawRect.h > 0
+    ? measurement.visibleRect.sh / measurement.drawRect.h
+    : BASE_PAGE_SURFACE_SCALE;
+  const maxSourceScale = Math.max(1, Math.min(sourceWidthRatio, sourceHeightRatio));
+  const zoomScale = BASE_PAGE_SURFACE_SCALE * Math.max(1, previewZoom || 1);
+  return Math.max(1, Math.min(maxSourceScale, zoomScale));
 }
 
 function buildQuadVertices({
@@ -427,8 +440,12 @@ export class WebGPUSpreadRenderer {
     return result;
   }
 
-  getThumbnail(page, effectEntry, display) {
-    return this.helperRenderer.getThumbnail(page, effectEntry, display);
+  getThumbnail(page, effectEntry, display, options = {}) {
+    return this.helperRenderer.getThumbnail(page, effectEntry, display, options);
+  }
+
+  getPlacedPagePreview(page, effectEntry, display, options = {}) {
+    return this.helperRenderer.getPlacedPagePreview(page, effectEntry, display, options);
   }
 
   rememberSnapshotScene(targetCanvas, sourceCanvas) {
@@ -565,6 +582,7 @@ export class WebGPUSpreadRenderer {
                 effectA: vec4<f32>,
                 effectB: vec4<f32>,
                 effectC: vec4<f32>,
+                effectD: vec4<f32>,
                 occluders: array<vec4<f32>, 32>,
               };
 
@@ -622,6 +640,7 @@ export class WebGPUSpreadRenderer {
                 effectA: vec4<f32>,
                 effectB: vec4<f32>,
                 effectC: vec4<f32>,
+                effectD: vec4<f32>,
                 occluders: array<vec4<f32>, 32>,
               };
 
@@ -653,6 +672,40 @@ export class WebGPUSpreadRenderer {
                 return (maxC - minC) / maxC;
               }
 
+              fn getHue(rgb: vec3<f32>) -> f32 {
+                let maxC = max(max(rgb.x, rgb.y), rgb.z);
+                let minC = min(min(rgb.x, rgb.y), rgb.z);
+                let delta = maxC - minC;
+                if (delta <= 0.00001) {
+                  return 0.0;
+                }
+                var hue = 0.0;
+                if (maxC == rgb.x) {
+                  hue = ((rgb.y - rgb.z) / delta);
+                } else if (maxC == rgb.y) {
+                  hue = ((rgb.z - rgb.x) / delta) + 2.0;
+                } else {
+                  hue = ((rgb.x - rgb.y) / delta) + 4.0;
+                }
+                return fract(hue / 6.0);
+              }
+
+              fn hueMatches(hue: f32, low: f32, high: f32) -> bool {
+                if (low <= high) {
+                  return hue >= low && hue <= high;
+                }
+                return hue >= low || hue <= high;
+              }
+
+              fn matchesSelection(rgb: vec3<f32>) -> bool {
+                let saturation = getSaturation(rgb);
+                if (saturation < uniforms.effectB.x || saturation > uniforms.effectB.y) {
+                  return false;
+                }
+                let hue = getHue(rgb);
+                return hueMatches(hue, uniforms.effectB.z, uniforms.effectB.w);
+              }
+
               fn applyNeutralize(rgb: vec3<f32>) -> vec3<f32> {
                 if (uniforms.effectA.w < 0.5) {
                   return rgb;
@@ -661,12 +714,11 @@ export class WebGPUSpreadRenderer {
                 return clamp(rgb / neutralize, vec3<f32>(0.0), vec3<f32>(1.0));
               }
 
-              fn applyBlackAndWhite(rgb: vec3<f32>) -> vec3<f32> {
-                let saturationThreshold = uniforms.effectB.x;
-                if (saturationThreshold <= 0.0) {
+              fn applyBlackAndWhite(rgb: vec3<f32>, selected: bool) -> vec3<f32> {
+                if (uniforms.effectC.w < 0.5) {
                   return rgb;
                 }
-                if (getSaturation(rgb) <= saturationThreshold) {
+                if (selected) {
                   let gray = dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
                   return vec3<f32>(gray, gray, gray);
                 }
@@ -680,13 +732,13 @@ export class WebGPUSpreadRenderer {
                 return pow(normalized, gamma);
               }
 
-              fn applyLevels(rgb: vec3<f32>) -> vec3<f32> {
-                if (getSaturation(rgb) > uniforms.effectB.x) {
+              fn applyLevels(rgb: vec3<f32>, selected: bool) -> vec3<f32> {
+                if (!selected) {
                   return rgb;
                 }
-                let blackPoint = uniforms.effectB.y;
-                let grayPoint = uniforms.effectB.z;
-                let whitePoint = uniforms.effectB.w;
+                let blackPoint = uniforms.effectC.x;
+                let grayPoint = uniforms.effectC.y;
+                let whitePoint = uniforms.effectC.z;
                 return clamp(vec3<f32>(
                   applyLevelsChannel(rgb.x, blackPoint, grayPoint, whitePoint),
                   applyLevelsChannel(rgb.y, blackPoint, grayPoint, whitePoint),
@@ -705,7 +757,7 @@ export class WebGPUSpreadRenderer {
               }
 
               fn applyBlendMode(base: vec3<f32>, blend: vec3<f32>) -> vec3<f32> {
-                let mode = i32(round(uniforms.effectC.x));
+                let mode = i32(round(uniforms.effectD.x));
                 if (mode == 1) {
                   return base * blend;
                 }
@@ -773,8 +825,9 @@ export class WebGPUSpreadRenderer {
                 let paper = uniforms.paperColor.rgb;
                 var content = unpremultiply(texel.rgb, texel.a);
                 content = applyNeutralize(content);
-                content = applyBlackAndWhite(content);
-                content = applyLevels(content);
+                let selected = matchesSelection(content);
+                content = applyBlackAndWhite(content, selected);
+                content = applyLevels(content, selected);
                 let composited = mix(paper, applyBlendMode(paper, content), texel.a);
                 let normal = normalize(input.worldNormal);
                 let lightDir = vec3<f32>(0.0, 0.0, -1.0);
@@ -958,6 +1011,7 @@ export class WebGPUSpreadRenderer {
 
   #buildScene(pages, margins, effects, display, options) {
     const showPlaceholder = !!options.showPlaceholder;
+    const previewZoom = Math.max(1, options.previewZoom || 1);
     const hasPlacedPages = !!pages;
     const sideStates = buildSideStates(margins, pages, hasPlacedPages);
 
@@ -974,6 +1028,7 @@ export class WebGPUSpreadRenderer {
       effects,
       display,
       showPlaceholder,
+      previewZoom,
       sideStates,
     };
   }
@@ -1157,13 +1212,14 @@ export class WebGPUSpreadRenderer {
     const textureResource = this.#getTextureResource(pageSurface);
     const gpuEffects = effectEntry?.gpu?.fragment || {
       neutralizeColor: null,
-      bwThreshold: 0,
+      bwEnabled: false,
+      selection: { satLow: 0, satHigh: 100, hueLow: 0, hueHigh: 360 },
       levels: { black: 0, gray: 128, white: 255 },
     };
     const neutralize = parseHexColor(gpuEffects.neutralizeColor || "#ffffff");
     const neutralizeEnabled = gpuEffects.neutralizeColor ? 1 : 0;
     const paperColor = parseHexColor(scene.display.paperColor);
-    const uniformData = new Float32Array(176);
+    const uniformData = new Float32Array(180);
     uniformData.set(modelMatrix, 0);
     uniformData.set([light.x, light.y, light.z, 1], 16);
     uniformData.set([this.canvas.width, this.canvas.height, -this.canvas.width, this.canvas.width], 20);
@@ -1172,13 +1228,19 @@ export class WebGPUSpreadRenderer {
     uniformData.set(paperColor, 32);
     uniformData.set([neutralize[0], neutralize[1], neutralize[2], neutralizeEnabled], 36);
     uniformData.set([
-      gpuEffects.bwThreshold ?? 0,
+      (gpuEffects.selection?.satLow ?? 0) / 100,
+      (gpuEffects.selection?.satHigh ?? 100) / 100,
+      ((gpuEffects.selection?.hueLow ?? 0) % 360) / 360,
+      ((gpuEffects.selection?.hueHigh ?? 360) === 360 ? 1 : ((gpuEffects.selection?.hueHigh ?? 360) % 360) / 360),
+    ], 40);
+    uniformData.set([
       (gpuEffects.levels?.black ?? 0) / 255,
       (gpuEffects.levels?.gray ?? 128) / 255,
       (gpuEffects.levels?.white ?? 255) / 255,
-    ], 40);
-    uniformData.set([getBlendModeIndex(scene.display.contentBlendMode), 0, 0, 0], 44);
-    let offset = 48;
+      gpuEffects.bwEnabled ? 1 : 0,
+    ], 44);
+    uniformData.set([getBlendModeIndex(scene.display.contentBlendMode), 0, 0, 0], 48);
+    let offset = 52;
     for (let i = 0; i < MAX_SHADOW_OCCLUDERS; i += 1) {
       const occluder = occluders[i];
       for (let corner = 0; corner < 4; corner += 1) {
@@ -1217,28 +1279,35 @@ export class WebGPUSpreadRenderer {
 
   #getPageSurfaceCanvas(scene, sideState, side) {
     if (!sideState?.page) return null;
+    if (!sideState.page.srcCanvas && sideState.page.placedPreviewCanvas) {
+      return sideState.page.placedPreviewCanvas;
+    }
 
     const measurement = measurePageDraw(sideState.page, sideState.contentRect, sideState.contentMode);
+    const surfaceScale = getPageSurfaceScale(sideState.pageRect, measurement, scene.previewZoom);
+    const surfaceCrop = sideState.page.getCropFor(sideState.page.displayCanvas);
     const drawKey = measurement
       ? [
-          Math.round(sideState.pageRect.w),
-          Math.round(sideState.pageRect.h),
-          sideState.page.crop.left,
-          sideState.page.crop.top,
-          sideState.page.crop.right,
-          sideState.page.crop.bottom,
-          Math.round(sideState.contentRect.x - sideState.pageRect.x),
-          Math.round(sideState.contentRect.y - sideState.pageRect.y),
-          Math.round(sideState.contentRect.w),
+        Math.round(sideState.pageRect.w),
+        Math.round(sideState.pageRect.h),
+        surfaceCrop.left,
+        surfaceCrop.top,
+        surfaceCrop.right,
+        surfaceCrop.bottom,
+        Math.round(sideState.contentRect.x - sideState.pageRect.x),
+        Math.round(sideState.contentRect.y - sideState.pageRect.y),
+        Math.round(sideState.contentRect.w),
           Math.round(sideState.contentRect.h),
           sideState.contentMode,
+          Math.round(surfaceScale * 1000),
         ].join("|")
       : null;
 
     let pageCache = this.pageSurfaceCache.get(sideState.page);
-    if (!pageCache || pageCache.srcCanvas !== sideState.page.srcCanvas) {
+    const sourceCanvas = sideState.page.displayCanvas;
+    if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
       pageCache = {
-        srcCanvas: sideState.page.srcCanvas,
+        srcCanvas: sourceCanvas,
         variants: new Map(),
       };
       this.pageSurfaceCache.set(sideState.page, pageCache);
@@ -1250,13 +1319,13 @@ export class WebGPUSpreadRenderer {
     const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
     const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
     const surface = document.createElement("canvas");
-    surface.width = pageWidth * PAGE_SURFACE_SCALE;
-    surface.height = pageHeight * PAGE_SURFACE_SCALE;
+    surface.width = Math.max(1, Math.round(pageWidth * surfaceScale));
+    surface.height = Math.max(1, Math.round(pageHeight * surfaceScale));
     const ctx = setHighQualitySampling(get2dContext(surface, { willReadFrequently: true }));
-    ctx.scale(PAGE_SURFACE_SCALE, PAGE_SURFACE_SCALE);
+    ctx.scale(surfaceScale, surfaceScale);
 
     if (measurement) {
-      const sourceCanvas = sideState.page.srcCanvas;
+      const sourceCanvas = sideState.page.displayCanvas;
       if (sourceCanvas) {
         if (measurement.clipRect) {
           ctx.save();

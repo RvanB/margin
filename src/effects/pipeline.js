@@ -1,41 +1,60 @@
 import {
-  bwEffect,
-  levelsEffect,
+  getSelectionGate,
   neutralizeEffect,
   normalizeHexColor,
   normalizeLevels,
+  selectionEffects,
 } from "./cpu.js";
 
 const LAYER_CACHE_LIMIT = 24;
 
 export function effectKey(effects = {}) {
-  const threshold = Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0)));
   const neutralizeColor = normalizeHexColor(effects.neutralizeColor);
   const levels = normalizeLevels(
     effects.levelsBlack,
     effects.levelsGray,
     effects.levelsWhite
   );
+  const selection = getSelectionGate(effects, effects.bwThreshold);
+  const bwEnabled = typeof effects.bwEnabled === "boolean"
+    ? effects.bwEnabled
+    : Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0))) > 0;
 
-  return `neutralize:${neutralizeColor || "none"}|bw:${threshold}|levels:${levels.black},${levels.gray},${levels.white}`;
+  return [
+    `neutralize:${neutralizeColor || "none"}`,
+    `selection:${selection.satLow},${selection.satHigh},${selection.hueLow},${selection.hueHigh}`,
+    `bw:${bwEnabled ? 1 : 0}`,
+    `levels:${levels.black},${levels.gray},${levels.white}`,
+  ].join("|");
 }
 
 export function buildPipeline(effects = {}) {
+  const selection = getSelectionGate(effects, effects.bwThreshold);
+  const bwEnabled = typeof effects.bwEnabled === "boolean"
+    ? effects.bwEnabled
+    : Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0))) > 0;
   return [
     neutralizeEffect(effects.neutralizeColor),
-    bwEffect(effects.bwThreshold),
-    levelsEffect(effects.levelsBlack, effects.levelsGray, effects.levelsWhite, effects.bwThreshold),
+    selectionEffects(selection, {
+      bwEnabled,
+      black: effects.levelsBlack,
+      gray: effects.levelsGray,
+      white: effects.levelsWhite,
+    }),
   ].filter(Boolean);
 }
 
 export function buildPipelineStages(effects = {}) {
-  const threshold = Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0)));
   const neutralizeColor = normalizeHexColor(effects.neutralizeColor);
   const levels = normalizeLevels(
     effects.levelsBlack,
     effects.levelsGray,
     effects.levelsWhite
   );
+  const selection = getSelectionGate(effects, effects.bwThreshold);
+  const bwEnabled = typeof effects.bwEnabled === "boolean"
+    ? effects.bwEnabled
+    : Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0))) > 0;
 
   return [
     {
@@ -43,31 +62,36 @@ export function buildPipelineStages(effects = {}) {
       effect: neutralizeEffect(effects.neutralizeColor),
     },
     {
-      key: `bw:${threshold}`,
-      effect: bwEffect(effects.bwThreshold),
-    },
-    {
-      key: `levels:${levels.black},${levels.gray},${levels.white}|sat:${threshold}`,
-      effect: levelsEffect(effects.levelsBlack, effects.levelsGray, effects.levelsWhite, effects.bwThreshold),
+      key: `selection:${selection.satLow},${selection.satHigh},${selection.hueLow},${selection.hueHigh}|bw:${bwEnabled ? 1 : 0}|levels:${levels.black},${levels.gray},${levels.white}`,
+      effect: selectionEffects(selection, {
+        bwEnabled,
+        black: effects.levelsBlack,
+        gray: effects.levelsGray,
+        white: effects.levelsWhite,
+      }),
     },
   ].filter(stage => stage.effect);
 }
 
 export function buildGpuEffectConfig(effects = {}) {
-  const threshold = Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0)));
   const neutralizeColor = normalizeHexColor(effects.neutralizeColor);
   const levels = normalizeLevels(
     effects.levelsBlack,
     effects.levelsGray,
     effects.levelsWhite
   );
+  const selection = getSelectionGate(effects, effects.bwThreshold);
+  const bwEnabled = typeof effects.bwEnabled === "boolean"
+    ? effects.bwEnabled
+    : Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0))) > 0;
 
   return {
     key: effectKey(effects),
     computeStages: [],
     fragment: {
       neutralizeColor,
-      bwThreshold: threshold / 100,
+      bwEnabled,
+      selection,
       levels,
     },
   };

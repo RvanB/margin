@@ -1,11 +1,12 @@
 import { Book } from "../model/Book.js";
 import { Page, makeDefaultPageEffects, normalizeFitAxis } from "../model/Page.js";
-import { autoCrop, normalizeHexColor, normalizeLevels } from "../effects/cpu.js";
+import { autoCrop, getSelectionGate, normalizeHexColor, normalizeLevels } from "../effects/cpu.js";
 import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
+import { downscaleCanvasToMaxEdge } from "../loading/downscaleCanvas.js";
 import { loadImageFile } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
 import { loadPdfDocument } from "../loading/pdfLoader.js";
-import { computeLayoutValues, computeMargins, computeScale } from "../rendering/layout.js";
+import { computeMargins, computeScale } from "../rendering/layout.js";
 import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
 import { renderOverlay } from "../rendering/OverlayRenderer.js";
 import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
@@ -15,6 +16,64 @@ function cloneSet(set) {
   return new Set([...set]);
 }
 
+function formatSliderValue(value, suffix = "") {
+  const rounded = Math.round(value * 10) / 10;
+  const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
+  return `${text}${suffix}`;
+}
+
+const CONTENT_ZOOM_MIN = 0.5;
+const CONTENT_ZOOM_MAX = 6;
+const CONTENT_ZOOM_STEP = 1.25;
+const MAX_RENDER_CANVAS_EDGE = 8192;
+const PLACED_PREVIEW_PAGE_HEIGHT = 96;
+
+function formatMeasuredRgb({ r, g, b }) {
+  return `rgb ${r}, ${g}, ${b}`;
+}
+
+function getMeasuredHue(r, g, b) {
+  const rf = r / 255;
+  const gf = g / 255;
+  const bf = b / 255;
+  const max = Math.max(rf, gf, bf);
+  const min = Math.min(rf, gf, bf);
+  const delta = max - min;
+  if (delta <= 1e-6) return 0;
+
+  let hue;
+  if (max === rf) hue = ((gf - bf) / delta) % 6;
+  else if (max === gf) hue = (bf - rf) / delta + 2;
+  else hue = (rf - gf) / delta + 4;
+  return ((hue * 60) + 360) % 360;
+}
+
+function getMeasuredSaturation(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return max === 0 ? 0 : ((max - min) / max) * 100;
+}
+
+function getMeasuredValue(r, g, b) {
+  return (Math.max(r, g, b) / 255) * 100;
+}
+
+function buildMeasuredColor(hex) {
+  const normalized = normalizeHexColor(hex) || "#ffffff";
+  const r = parseInt(normalized.slice(1, 3), 16);
+  const g = parseInt(normalized.slice(3, 5), 16);
+  const b = parseInt(normalized.slice(5, 7), 16);
+  return {
+    hex: normalized,
+    r,
+    g,
+    b,
+    hue: getMeasuredHue(r, g, b),
+    saturation: getMeasuredSaturation(r, g, b),
+    value: getMeasuredValue(r, g, b),
+  };
+}
+
 export class App {
   constructor(spreadCanvas, overlayCanvas, stripContainer, { rendererClass = SpreadRenderer } = {}) {
     this.spreadCanvas = spreadCanvas;
@@ -22,6 +81,8 @@ export class App {
     this.overlayCtx = overlayCanvas.getContext("2d");
     this.canvasWrap = document.getElementById("canvas-wrap");
     this.canvasArea = document.getElementById("canvas-area");
+    this.canvasAreaInner = document.getElementById("canvas-area-inner");
+    this.canvasStage = document.getElementById("canvas-stage");
     this.toolbar = document.getElementById("toolbar");
     this.book = new Book();
     this.uiState = {
@@ -42,11 +103,15 @@ export class App {
       preserveRatio: false,
       ratioSameAsPage: true,
     };
-    this.wheelDeltaRemainder = 0;
     this.listeners = [];
     this.dragHandle = null;
     this.contentEffectCaches = new WeakMap();
+    this.measuredColor = buildMeasuredColor("#ffffff");
+    this.contentZoom = 1;
+    this.renderZoom = 1;
+    this.previewRedrawTimer = 0;
     this.lastMargins = computeMargins(this.book.layout, 1);
+    this.previewLayoutKey = "";
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
     this.spreadRenderer = new rendererClass(spreadCanvas);
@@ -57,10 +122,12 @@ export class App {
       onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
       getEffectEntry: page => this.getEffectEntry(page),
       getDisplay: () => this.book.display,
+      getLayout: () => this.book.layout,
     });
   }
 
   init() {
+    this.canvasWrap.dataset.mode = "layout";
     this.mountToolbar("layout");
     this.applyVdGLayoutValues();
     this.syncBookLayoutFromInputs();
@@ -139,10 +206,9 @@ export class App {
 
     if (
       this.book.pages.length &&
-      (this.uiState.appMode === "content" || this.uiState.showLayoutContent) &&
-      this.lazyPageLoader.lastEnsuredSpread !== this.uiState.currentSpread
+      (this.uiState.appMode === "content" || this.uiState.showLayoutContent)
     ) {
-      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread);
+      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
     }
 
     const spreadPages = this.getRenderableSpreadPages(this.uiState.currentSpread);
@@ -157,6 +223,7 @@ export class App {
       this.book.display,
       {
         showPlaceholder: this.shouldShowPlaceholder(),
+        previewZoom: this.renderZoom,
       }
     );
 
@@ -164,7 +231,7 @@ export class App {
     this.overlayCanvas.height = this.spreadCanvas.height;
     this.uiState.spreadSideStates = renderResult.sideStates;
     this.uiState.spreadRects = this.shouldExposeSpreadRects() ? renderResult.spreadRects : null;
-    this.applyCanvasViewport(margins, spreadPages);
+    this.syncCanvasStage();
 
     if (!this.spreadRenderer.isAnimating) {
       renderOverlay(this.overlayCtx, margins, this.uiState);
@@ -237,6 +304,11 @@ export class App {
     this.layoutControlsState.preserveRatio = !!document.getElementById("preserve-ratio")?.checked;
     this.layoutControlsState.ratioSameAsPage = !!document.getElementById("ratio-same-as-page")?.checked;
     this.uiState.showVdG = !!document.getElementById("vdg")?.checked;
+    const nextPreviewLayoutKey = this.getPlacedPreviewLayoutKey();
+    if (nextPreviewLayoutKey !== this.previewLayoutKey) {
+      this.previewLayoutKey = nextPreviewLayoutKey;
+      this.refreshAllPlacedPreviews();
+    }
   }
 
   restoreLayoutInputs() {
@@ -378,36 +450,79 @@ export class App {
       this.redraw();
     });
 
-    this.addListener("bw-slider", "input", () => {
-      const threshold = parseInt(document.getElementById("bw-slider").value, 10) || 0;
-      this.applyBwToPage(this.getEditingPage(), threshold);
-      this.redraw();
+    this.addListener("measure-color", "input", event => {
+      this.measuredColor = buildMeasuredColor(event.target.value);
+      this.setMeasuredColorUI(this.measuredColor);
     });
 
-    this.addListener("bw-slider", "change", () => {
-      const threshold = parseInt(document.getElementById("bw-slider").value, 10) || 0;
-      for (const page of this.getSelectedPages()) this.applyBwToPage(page, threshold);
+    const applySelectionFromUI = () => {
+      const selection = this.readSelectionUI();
+      const page = this.getEditingPage();
+      this.applySelectionToPage(page, selection);
+      this.redraw();
+    };
+
+    ["selection-sat-low", "selection-sat-high", "selection-hue-low", "selection-hue-high"].forEach(id => {
+      [id, `${id}-num`].forEach(controlId => {
+        this.addListener(controlId, "input", event => {
+          if (event.target.value === "" || Number.isNaN(Number(event.target.value))) return;
+          this.setSelectionControlUI(id, event.target.value);
+          applySelectionFromUI();
+        });
+        this.addListener(controlId, "change", event => {
+          if (event.target.value === "" || Number.isNaN(Number(event.target.value))) {
+            this.setSelectionUI(getSelectionGate(this.getEditingPage()?.effects));
+            return;
+          }
+          this.setSelectionControlUI(id, event.target.value);
+          const selection = this.readSelectionUI();
+          this.setSelectionUI(selection);
+          const pages = this.getSelectedPages();
+          for (const page of pages) {
+            this.applySelectionToPage(page, selection);
+            this.recomputeTrimFromEffects(page);
+          }
+          this.refreshAffectedThumbnails(pages);
+          this.redraw();
+        });
+      });
+    });
+
+    this.addListener("bw-enabled", "change", event => {
+      const enabled = !!event.target.checked;
+      const pages = this.getSelectedPages();
+      for (const page of pages) {
+        this.applyBwEnabledToPage(page, enabled);
+        this.recomputeTrimFromEffects(page);
+      }
       this.refreshAffectedThumbnails(this.getSelectedPages());
       this.redraw();
     });
 
     this.addListener("neutralize-clear", "click", () => {
       const pages = this.getSelectedPages();
-      for (const page of pages) this.applyNeutralizeColorToPage(page, null);
+      for (const page of pages) {
+        this.applyNeutralizeColorToPage(page, null);
+        this.recomputeTrimFromEffects(page);
+      }
       this.syncPageUI();
       this.refreshAffectedThumbnails(pages);
       this.redraw();
     });
 
     this.addListener("neutralize-color", "input", () => {
-      this.applyNeutralizeColorToPage(this.getEditingPage(), document.getElementById("neutralize-color").value);
+      const page = this.getEditingPage();
+      this.applyNeutralizeColorToPage(page, document.getElementById("neutralize-color").value);
       this.redraw();
     });
 
     this.addListener("neutralize-color", "change", () => {
       const color = document.getElementById("neutralize-color").value;
       const pages = this.getSelectedPages();
-      for (const page of pages) this.applyNeutralizeColorToPage(page, color);
+      for (const page of pages) {
+        this.applyNeutralizeColorToPage(page, color);
+        this.recomputeTrimFromEffects(page);
+      }
       this.syncPageUI();
       this.refreshAffectedThumbnails(pages);
       this.redraw();
@@ -428,7 +543,8 @@ export class App {
 
       const levels = normalizeLevels(black, gray, white);
       this.setLevelsUI(levels);
-      this.applyLevelsToPage(this.getEditingPage(), levels);
+      const page = this.getEditingPage();
+      this.applyLevelsToPage(page, levels);
       this.redraw();
     };
 
@@ -441,7 +557,10 @@ export class App {
           parseInt(document.getElementById("levels-white").value, 10)
         );
         const pages = this.getSelectedPages();
-        for (const page of pages) this.applyLevelsToPage(page, levels);
+        for (const page of pages) {
+          this.applyLevelsToPage(page, levels);
+          this.recomputeTrimFromEffects(page);
+        }
         this.refreshAffectedThumbnails(pages);
         this.redraw();
       });
@@ -449,6 +568,7 @@ export class App {
 
     this.addListener("cover-check", "change", event => {
       for (const page of this.getSelectedPages()) page.cover = event.target.checked;
+      this.refreshAffectedThumbnails(this.getSelectedPages());
       this.syncPageUI();
       this.redraw();
     });
@@ -456,6 +576,7 @@ export class App {
     this.addListener("fit-axis", "change", event => {
       const fitAxis = normalizeFitAxis(event.target.value);
       for (const page of this.getSelectedPages()) page.fitAxis = fitAxis;
+      this.refreshAffectedThumbnails(this.getSelectedPages());
       this.redraw();
     });
 
@@ -463,7 +584,56 @@ export class App {
   }
 
   refreshAffectedThumbnails(pages) {
-    for (const page of pages) this.pageStrip.invalidateThumbnail(page);
+    for (const page of pages) this.refreshPlacedPreview(page);
+  }
+
+  getPlacedPreviewLayoutKey() {
+    const { layout, display } = this.book;
+    return [
+      layout.pw,
+      layout.ph,
+      layout.ratio,
+      layout.b,
+      layout.mInner,
+      layout.mTop,
+      layout.mBottom,
+      display.paperColor,
+      display.contentBlendMode,
+    ].join("|");
+  }
+
+  refreshPlacedPreview(pageOrIndex) {
+    const pageIndex = typeof pageOrIndex === "number"
+      ? pageOrIndex
+      : this.book.pages.indexOf(pageOrIndex);
+    const page = this.book.pages[pageIndex];
+    if (!page) return;
+    const sourceCanvas = page.previewCanvas || page.thumbnailSourceCanvas || null;
+    if (!sourceCanvas) {
+      page.placedPreviewCanvas = null;
+      this.pageStrip.invalidateThumbnail(page);
+      return;
+    }
+    const previewRenderer = typeof this.spreadRenderer.getPlacedPagePreview === "function"
+      ? this.spreadRenderer
+      : new SpreadRenderer(document.createElement("canvas"));
+    page.placedPreviewCanvas = previewRenderer.getPlacedPagePreview(
+      page,
+      this.getEffectEntry(page),
+      this.book.display,
+      {
+        sourceCanvas,
+        layout: this.book.layout,
+        side: pageIndex % 2 === 1 ? "left" : "right",
+        pageHeight: PLACED_PREVIEW_PAGE_HEIGHT,
+      }
+    );
+    this.pageStrip.invalidateThumbnail(page);
+  }
+
+  refreshAllPlacedPreviews() {
+    this.book.pages.forEach((_, pageIndex) => this.refreshPlacedPreview(pageIndex));
+    this.pageStrip.invalidateAllThumbnails();
   }
 
   syncPageUI() {
@@ -473,7 +643,8 @@ export class App {
     if (!page) return;
 
     this.setTrimUI(page.tolerance);
-    this.setBwUI(page.effects.bwThreshold);
+    this.setSelectionUI(getSelectionGate(page.effects, page.effects.bwThreshold));
+    this.setBwUI(page.effects);
     this.setNeutralizeUI(page.effects.neutralizeColor);
     this.setLevelsUI({
       black: page.effects.levelsBlack,
@@ -493,6 +664,7 @@ export class App {
       const count = this.uiState.selectedPageIdxs.size;
       selectionCount.textContent = count > 1 ? `${count} pages` : "";
     }
+    this.setMeasuredColorUI(this.measuredColor);
   }
 
   setTrimUI(tolerance) {
@@ -502,11 +674,60 @@ export class App {
     if (value) value.textContent = tolerance;
   }
 
-  setBwUI(threshold) {
-    const slider = document.getElementById("bw-slider");
-    const value = document.getElementById("bw-val");
-    if (slider) slider.value = threshold;
-    if (value) value.textContent = `${threshold}% sat`;
+  setSelectionUI(selection = {}) {
+    const gate = getSelectionGate(selection, selection?.bwThreshold);
+    const mappings = [
+      ["selection-sat-low", gate.satLow],
+      ["selection-sat-high", gate.satHigh],
+      ["selection-hue-low", gate.hueLow],
+      ["selection-hue-high", gate.hueHigh],
+    ];
+    mappings.forEach(([id, value]) => {
+      this.setSelectionControlUI(id, value);
+    });
+  }
+
+  setSelectionControlUI(id, value) {
+    [id, `${id}-num`].forEach(controlId => {
+      const el = document.getElementById(controlId);
+      if (el) el.value = value;
+    });
+  }
+
+  setMeasuredColorUI(sample = null) {
+    const picker = document.getElementById("measure-color");
+    if (picker) picker.value = sample?.hex || "#ffffff";
+
+    const mappings = [
+      ["measure-status", "reference"],
+      ["measure-hex", sample?.hex || "#ffffff"],
+      ["measure-rgb", sample ? formatMeasuredRgb(sample) : "rgb 255, 255, 255"],
+      ["measure-hue", sample ? formatSliderValue(sample.hue, "\u00b0") : "0\u00b0"],
+      ["measure-sat", sample ? formatSliderValue(sample.saturation, "%") : "0%"],
+      ["measure-value", sample ? formatSliderValue(sample.value, "%") : "100%"],
+    ];
+    mappings.forEach(([id, value]) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = String(value);
+    });
+  }
+
+  readSelectionUI() {
+    return {
+      selectionSatLow: parseFloat(document.getElementById("selection-sat-low")?.value),
+      selectionSatHigh: parseFloat(document.getElementById("selection-sat-high")?.value),
+      selectionHueLow: parseFloat(document.getElementById("selection-hue-low")?.value),
+      selectionHueHigh: parseFloat(document.getElementById("selection-hue-high")?.value),
+    };
+  }
+
+  setBwUI(effects = {}) {
+    const checkbox = document.getElementById("bw-enabled");
+    if (checkbox) {
+      checkbox.checked = typeof effects.bwEnabled === "boolean"
+        ? effects.bwEnabled
+        : Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0))) > 0;
+    }
   }
 
   setNeutralizeUI(color) {
@@ -539,34 +760,50 @@ export class App {
     if (!page) return;
     const tolerance = parseInt(document.getElementById("trim-slider")?.value, 10);
     page.tolerance = tolerance;
-    if (page.srcCanvas) {
-      page.crop = autoCrop(
+    this.recomputeTrimFromEffects(page, tolerance);
+    this.refreshPlacedPreview(page);
+    this.setTrimUI(tolerance);
+  }
+
+  recomputeTrimFromEffects(page, tolerance = page?.tolerance) {
+    if (!page) return;
+    const sourceCanvas = page.displayCanvas;
+    if (sourceCanvas) {
+      page.setCropFor(sourceCanvas, autoCrop(
         applyEffectsToCanvas(
-          page.srcCanvas,
+          sourceCanvas,
           page.effects,
           this.getContentEffectLayerCache(page),
-          `${page.srcCanvas.width}x${page.srcCanvas.height}`
+          `${sourceCanvas.width}x${sourceCanvas.height}`
         ),
         tolerance
-      );
+      ));
       page.cropInitialized = true;
     } else {
       page.cropInitialized = false;
     }
-    this.setTrimUI(tolerance);
   }
 
-  applyBwToPage(page, threshold = null) {
+  applySelectionToPage(page, selection) {
     if (!page) return;
-    const nextThreshold = threshold ?? (parseInt(document.getElementById("bw-slider")?.value, 10) || 0);
-    page.effects.bwThreshold = Math.max(0, Math.min(100, nextThreshold));
-    this.pageStrip.invalidateThumbnail(page);
+    const gate = getSelectionGate(selection, page.effects.bwThreshold);
+    page.effects.selectionSatLow = gate.satLow;
+    page.effects.selectionSatHigh = gate.satHigh;
+    page.effects.selectionHueLow = gate.hueLow;
+    page.effects.selectionHueHigh = gate.hueHigh;
+    this.refreshPlacedPreview(page);
+  }
+
+  applyBwEnabledToPage(page, enabled = false) {
+    if (!page) return;
+    page.effects.bwEnabled = !!enabled;
+    this.refreshPlacedPreview(page);
   }
 
   applyNeutralizeColorToPage(page, color) {
     if (!page) return;
     page.effects.neutralizeColor = normalizeHexColor(color);
-    this.pageStrip.invalidateThumbnail(page);
+    this.refreshPlacedPreview(page);
   }
 
   applyLevelsToPage(page, levels) {
@@ -574,14 +811,15 @@ export class App {
     page.effects.levelsBlack = levels.black;
     page.effects.levelsGray = levels.gray;
     page.effects.levelsWhite = levels.white;
-    this.pageStrip.invalidateThumbnail(page);
+    this.refreshPlacedPreview(page);
   }
 
   getContentEffectLayerCache(page) {
+    const sourceCanvas = page?.displayCanvas;
     let cached = this.contentEffectCaches.get(page);
-    if (!cached || cached.srcCanvas !== page.srcCanvas) {
+    if (!cached || cached.srcCanvas !== sourceCanvas) {
       cached = {
-        srcCanvas: page.srcCanvas,
+        srcCanvas: sourceCanvas,
         variants: new Map(),
       };
       this.contentEffectCaches.set(page, cached);
@@ -627,25 +865,28 @@ export class App {
       }
     }
 
-    this.navigateTo(targetSpread);
+    this.navigateTo(targetSpread, pageIndex);
   }
 
-  selectSpreadPage(spreadIndex) {
+  selectSpreadPage(spreadIndex, preferredPageIndex = null) {
     if (this.uiState.appMode !== "content" || !this.book.pages.length) return;
     const { left, right } = this.book.spreadPageEntries(spreadIndex);
-    const pageIndex = left.pageIndex >= 0 ? left.pageIndex : right.pageIndex;
+    const spreadPageIndexes = [left.pageIndex, right.pageIndex].filter(index => index >= 0);
+    const pageIndex = spreadPageIndexes.includes(preferredPageIndex)
+      ? preferredPageIndex
+      : (left.pageIndex >= 0 ? left.pageIndex : right.pageIndex);
     if (pageIndex < 0 || pageIndex >= this.book.pages.length) return;
     this.uiState.editingPageIdx = pageIndex;
     this.uiState.selectedPageIdxs = new Set([pageIndex]);
     this.syncPageUI();
   }
 
-  navigateTo(targetSpread) {
+  navigateTo(targetSpread, preferredPageIndex = null) {
     const clampedTarget = Math.max(0, Math.min(targetSpread, this.book.numSpreads() - 1));
     if (clampedTarget === this.getEffectiveSpread()) return;
 
-    this.lazyPageLoader.ensureSpreadLoaded(clampedTarget);
-    this.selectSpreadPage(clampedTarget);
+    this.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, { allowHighRes: false });
+    this.selectSpreadPage(clampedTarget, preferredPageIndex);
 
     if (!this.lastMargins || !this.book.pages.length) {
       this.uiState.currentSpread = clampedTarget;
@@ -676,10 +917,12 @@ export class App {
           this.uiState.currentSpread = this.uiState.effectiveSpread;
           this.overlayCanvas.style.visibility = "";
           this.redraw();
+          this.schedulePreviewRedraw();
         };
 
     this.animationCompletionScheduled = true;
     this.spreadRenderer.animateTo(fromCanvas, toCanvas, direction, onDone);
+    this.schedulePreviewRedraw();
     this.pageStrip.update(this.book, {
       ...this.uiState,
       selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
@@ -706,6 +949,7 @@ export class App {
       this.book.display,
       {
         showPlaceholder: this.shouldShowPlaceholder(),
+        previewZoom: this.renderZoom,
       }
     );
 
@@ -733,76 +977,77 @@ export class App {
   }
 
   getRenderScale() {
-    const containerWidth = this.canvasArea.clientWidth;
-    const containerHeight = this.canvasArea.clientHeight;
-    if (this.uiState.appMode !== "content") {
-      return computeScale(this.book.layout, containerWidth, containerHeight);
-    }
-
-    const focusRect = this.getContentFocusRect(this.getRenderableSpreadPages(this.uiState.currentSpread), computeLayoutValues(this.book.layout));
-    if (!focusRect) {
-      return computeScale(this.book.layout, containerWidth, containerHeight);
-    }
-    return Math.min((containerWidth - 64) / focusRect.w, (containerHeight - 64) / focusRect.h);
+    const containerWidth = Math.max(1, this.canvasArea.clientWidth - 64);
+    const containerHeight = Math.max(1, this.canvasArea.clientHeight - 64);
+    const baseScale = computeScale(this.book.layout, containerWidth, containerHeight);
+    return baseScale * this.renderZoom;
   }
 
-  applyCanvasViewport(margins, spreadPages) {
-    const zoomed = this.uiState.appMode === "content" && !!spreadPages;
-    this.canvasArea.classList.toggle("content-zoom", zoomed);
-    if (!zoomed) {
-      this.canvasArea.style.setProperty("--canvas-offset-x", "0px");
-      this.canvasArea.style.setProperty("--canvas-offset-y", "0px");
-      return;
-    }
-
-    const focusRect = this.getContentFocusRect(spreadPages, margins);
-    const offsetX = focusRect
-      ? margins.pagePxW - (focusRect.x + focusRect.w / 2)
-      : 0;
-    const offsetY = focusRect
-      ? margins.pagePxH / 2 - (focusRect.y + focusRect.h / 2)
-      : 0;
-    this.canvasArea.style.setProperty("--canvas-offset-x", `${Math.round(offsetX)}px`);
-    this.canvasArea.style.setProperty("--canvas-offset-y", `${Math.round(offsetY)}px`);
+  getSafeRenderZoom(targetZoom = this.contentZoom) {
+    const containerWidth = Math.max(1, this.canvasArea.clientWidth - 64);
+    const containerHeight = Math.max(1, this.canvasArea.clientHeight - 64);
+    const baseScale = computeScale(this.book.layout, containerWidth, containerHeight);
+    const baseMargins = computeMargins(this.book.layout, baseScale);
+    const maxWidthZoom = (2 * baseMargins.pagePxW) > 0
+      ? MAX_RENDER_CANVAS_EDGE / (2 * baseMargins.pagePxW)
+      : targetZoom;
+    const maxHeightZoom = baseMargins.pagePxH > 0
+      ? MAX_RENDER_CANVAS_EDGE / baseMargins.pagePxH
+      : targetZoom;
+    return Math.max(CONTENT_ZOOM_MIN, Math.min(targetZoom, maxWidthZoom, maxHeightZoom));
   }
 
-  getContentFocusRect(spreadPages, metrics) {
-    if (!spreadPages) return null;
-    const selectedSide = spreadPages.left?.pageIndex === this.uiState.editingPageIdx
-      ? "left"
-      : spreadPages.right?.pageIndex === this.uiState.editingPageIdx
-        ? "right"
-        : spreadPages.left?.pageIndex >= 0
-          ? "left"
-          : spreadPages.right?.pageIndex >= 0
-            ? "right"
-            : null;
-    if (!selectedSide) return null;
-
-    const page = spreadPages[selectedSide]?.page;
-    const pageWidth = "pagePxW" in metrics ? metrics.pagePxW : metrics.pw;
-    const pageHeight = "pagePxH" in metrics ? metrics.pagePxH : metrics.ph;
-    const inner = "innerPx" in metrics ? metrics.innerPx : metrics.inner;
-    const outer = "outerPx" in metrics ? metrics.outerPx : metrics.outer;
-    const top = "topPx" in metrics ? metrics.topPx : metrics.top;
-    const tw = "twPx" in metrics ? metrics.twPx : metrics.tw;
-    const th = "thPx" in metrics ? metrics.thPx : metrics.th;
-
-    if (page?.cover) {
-      return {
-        x: selectedSide === "left" ? 0 : pageWidth,
-        y: 0,
-        w: pageWidth,
-        h: pageHeight,
-      };
+  syncCanvasStage() {
+    if (this.canvasStage) {
+      const displayScale = this.renderZoom > 0 ? this.contentZoom / this.renderZoom : this.contentZoom;
+      this.canvasStage.style.width = `${Math.max(1, Math.round(this.spreadCanvas.width * displayScale))}px`;
+      this.canvasStage.style.height = `${Math.max(1, Math.round(this.spreadCanvas.height * displayScale))}px`;
     }
+    this.canvasWrap.dataset.mode = this.uiState.appMode;
+    this.syncCanvasZoomUI();
+  }
 
-    return {
-      x: selectedSide === "left" ? outer : pageWidth + inner,
-      y: top,
-      w: tw,
-      h: th,
-    };
+  syncCanvasZoomUI() {
+    const zoomIn = document.getElementById("canvas-zoom-in");
+    const zoomOut = document.getElementById("canvas-zoom-out");
+    if (!zoomIn || !zoomOut) return;
+    zoomIn.disabled = this.contentZoom >= CONTENT_ZOOM_MAX;
+    zoomOut.disabled = this.contentZoom <= CONTENT_ZOOM_MIN;
+  }
+
+  adjustContentZoom(direction) {
+    const multiplier = direction > 0 ? CONTENT_ZOOM_STEP : 1 / CONTENT_ZOOM_STEP;
+    const nextZoom = Math.max(CONTENT_ZOOM_MIN, Math.min(CONTENT_ZOOM_MAX, this.contentZoom * multiplier));
+    if (Math.abs(nextZoom - this.contentZoom) < 0.0001) return;
+
+    const viewportWidth = this.canvasArea.clientWidth;
+    const viewportHeight = this.canvasArea.clientHeight;
+    const centerX = this.canvasArea.scrollLeft + viewportWidth / 2;
+    const centerY = this.canvasArea.scrollTop + viewportHeight / 2;
+    const zoomRatio = nextZoom / this.contentZoom;
+
+    this.contentZoom = nextZoom;
+    this.syncCanvasStage();
+    requestAnimationFrame(() => {
+      this.canvasArea.scrollLeft = Math.max(0, centerX * zoomRatio - viewportWidth / 2);
+      this.canvasArea.scrollTop = Math.max(0, centerY * zoomRatio - viewportHeight / 2);
+    });
+    this.schedulePreviewRedraw();
+  }
+
+  schedulePreviewRedraw() {
+    if (this.previewRedrawTimer) clearTimeout(this.previewRedrawTimer);
+    this.previewRedrawTimer = setTimeout(() => {
+      this.previewRedrawTimer = 0;
+      const targetSpread = this.getEffectiveSpread();
+      if (this.book.pages.length) {
+        this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
+      }
+      const nextRenderZoom = this.getSafeRenderZoom(this.contentZoom);
+      if (Math.abs(this.renderZoom - nextRenderZoom) < 0.0001) return;
+      this.renderZoom = nextRenderZoom;
+      this.redraw();
+    }, 500);
   }
 
   printCurrentSpread() {
@@ -820,6 +1065,7 @@ export class App {
       this.book.display,
       {
         showPlaceholder: this.shouldShowPlaceholder(),
+        previewZoom: 1,
       }
     );
     const overlayCanvas = document.createElement("canvas");
@@ -879,11 +1125,16 @@ export class App {
       }
 
       const canvas = await loadImageFile(file);
+      const thumbnailSourceCanvas = await downscaleCanvasToMaxEdge(canvas, 96);
       this.book.addPage(new Page({
         source: { type: "image", file },
         srcCanvas: canvas,
+        previewCanvas: thumbnailSourceCanvas,
+        thumbnailSourceCanvas,
         aspectRatio: canvas.width / canvas.height,
         crop: autoCrop(applyEffectsToCanvas(canvas, makeDefaultPageEffects()), 128),
+        cropSourceWidth: canvas.width,
+        cropSourceHeight: canvas.height,
         cropInitialized: true,
         tolerance: 128,
         effects: makeDefaultPageEffects(),
@@ -895,6 +1146,7 @@ export class App {
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
     this.contentEffectCaches = new WeakMap();
+    this.measuredColor = buildMeasuredColor(this.measuredColor?.hex);
     this.overlayCanvas.style.visibility = "";
     this.uiState.currentSpread = 0;
     this.uiState.effectiveSpread = 0;
@@ -902,19 +1154,24 @@ export class App {
     this.uiState.selectedPageIdxs = this.book.pages.length ? new Set([0]) : new Set();
     this.pageStrip.invalidateAllThumbnails();
     this.pageStrip.scrollToStart();
-    this.lazyPageLoader.ensureSpreadLoaded(0);
+    this.refreshAllPlacedPreviews();
+    this.lazyPageLoader.ensureSpreadLoaded(0, 1, { allowHighRes: false });
+    this.lazyPageLoader.warmAllPreviews();
     if (this.uiState.appMode === "content") this.syncPageUI();
     this.redraw();
+    this.schedulePreviewRedraw();
   }
 
   onPageReady(pageIndex) {
     const page = this.book.pages[pageIndex];
     if (!page) return;
+    this.refreshPlacedPreview(pageIndex);
     this.pageStrip.updateThumbnail(pageIndex, page, this.spreadRenderer);
     if (this.spreadRenderer.isAnimating) return;
     const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
     if (pageIndex === left.pageIndex || pageIndex === right.pageIndex) {
       this.redraw();
+      this.schedulePreviewRedraw();
     }
   }
 
@@ -924,10 +1181,12 @@ export class App {
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
     this.contentEffectCaches = new WeakMap();
+    this.measuredColor = null;
     this.overlayCanvas.style.visibility = "";
     this.clearListeners();
     this.uiState.appMode = mode;
     this.uiState.hoverHandle = null;
+    this.canvasWrap.dataset.mode = mode;
     this.mountToolbar(mode);
 
     if (mode === "layout") {
@@ -945,18 +1204,14 @@ export class App {
     this.spreadCanvas.addEventListener("mousemove", event => this.handleCanvasMouseMove(event));
     this.spreadCanvas.addEventListener("mouseup", () => this.handleCanvasMouseUp());
     this.spreadCanvas.addEventListener("mouseleave", () => this.handleCanvasMouseLeave());
-    this.canvasArea.addEventListener("mousedown", event => {
-      if (this.uiState.appMode !== "content") return;
-      if (event.target !== this.canvasArea) return;
-      this.switchMode("layout");
-    });
+    document.getElementById("canvas-zoom-in")?.addEventListener("click", () => this.adjustContentZoom(1));
+    document.getElementById("canvas-zoom-out")?.addEventListener("click", () => this.adjustContentZoom(-1));
     document.addEventListener("dragover", event => event.preventDefault());
     document.addEventListener("drop", event => {
       event.preventDefault();
       this.appendFiles(event.dataTransfer.files);
     });
     document.addEventListener("keydown", event => this.handleKeyDown(event), true);
-    this.canvasArea.addEventListener("wheel", event => this.handleWheel(event), { passive: true });
     document.querySelectorAll(".mode-tab").forEach(button =>
       button.addEventListener("click", () => this.switchMode(button.dataset.mode))
     );
@@ -972,6 +1227,21 @@ export class App {
     const key = typeof event.key === "string" ? event.key.toLowerCase() : event.key;
     const base = this.getEffectiveSpread();
     const max = this.book.numSpreads() - 1;
+
+    if ((event.metaKey || event.ctrlKey) && !event.altKey) {
+      if (key === "+" || key === "=") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.adjustContentZoom(1);
+        return;
+      }
+      if (key === "-" || key === "_") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.adjustContentZoom(-1);
+        return;
+      }
+    }
 
     if (key === "arrowleft" && base > 0) this.navigateTo(base - 1);
     if (key === "arrowright" && base < max) this.navigateTo(base + 1);
@@ -1000,33 +1270,6 @@ export class App {
         event.preventDefault();
         document.getElementById(toggleId)?.click();
       }
-    }
-  }
-
-  handleWheel(event) {
-    if (!this.book.pages.length) return;
-    const unit = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL
-      ? 120
-      : event.deltaMode === WheelEvent.DOM_DELTA_LINE
-        ? 3
-        : 1;
-    const normalizedDelta = event.deltaY / unit;
-    this.wheelDeltaRemainder += Math.abs(normalizedDelta) >= 1
-      ? Math.sign(normalizedDelta)
-      : normalizedDelta;
-
-    let base = this.getEffectiveSpread();
-    const max = this.book.numSpreads() - 1;
-    if (this.wheelDeltaRemainder >= 1 && base < max) {
-      this.wheelDeltaRemainder = 0;
-      this.navigateTo(base + 1);
-    } else if (this.wheelDeltaRemainder <= -1 && base > 0) {
-      this.wheelDeltaRemainder = 0;
-      this.navigateTo(base - 1);
-    }
-
-    if ((base === 0 && this.wheelDeltaRemainder < 0) || (base === max && this.wheelDeltaRemainder > 0)) {
-      this.wheelDeltaRemainder = 0;
     }
   }
 
@@ -1068,7 +1311,7 @@ export class App {
         edge: handle.edge,
         startX: x,
         startY: y,
-        startCrop: { ...page.crop },
+        startCrop: page.getCropFor(page.displayCanvas),
         side: spreadHit.side,
       };
       this.setCanvasCursor(this.cursorForEdge(handle.edge));
@@ -1097,7 +1340,7 @@ export class App {
       } else {
         crop.right = Math.max(0, Math.min(sideRect.sw - crop.left - 1, Math.round(this.dragHandle.startCrop.right - dx / sideRect.fitScale)));
       }
-      page.crop = crop;
+      page.setCropFor(page.displayCanvas, crop);
       this.redraw();
       return;
     }
@@ -1115,6 +1358,10 @@ export class App {
   }
 
   handleCanvasMouseUp() {
+    if (this.dragHandle) {
+      const sideRect = this.uiState.spreadRects?.[this.dragHandle.side];
+      if (sideRect?.pageIndex >= 0) this.refreshPlacedPreview(sideRect.pageIndex);
+    }
     this.dragHandle = null;
     if (!this.uiState.hoverHandle) this.setCanvasCursor("default");
   }

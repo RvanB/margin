@@ -1,6 +1,8 @@
 import { fillLorem } from "./text.js";
 import { drawPageBorder } from "./primitives.js";
+import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
+import { computeMargins } from "./layout.js";
 
 const TURN_EASING_POWER = 3;
 const TURN_DURATION_MS = 750;
@@ -53,9 +55,68 @@ export class SpreadRenderer {
     return { canvas: offscreen, ...result };
   }
 
-  getThumbnail(page, effectEntry, display) {
+  getPlacedPagePreview(page, effectEntry, display, options = {}) {
+    const sourceCanvas = options.sourceCanvas ?? page?.previewCanvas ?? page?.displayCanvas;
+    const layout = options.layout ?? null;
+    const side = options.side === "left" ? "left" : "right";
+    const pageHeight = Math.max(1, Math.round(options.pageHeight || 96));
+    const pageWidth = layout
+      ? Math.max(1, Math.round(pageHeight * (layout.pw / layout.ph)))
+      : Math.max(1, Math.round(pageHeight * (page.aspectRatio || 1)));
+    const pageCanvas = document.createElement("canvas");
+    pageCanvas.width = pageWidth;
+    pageCanvas.height = pageHeight;
+    const pageCtx = get2dContext(pageCanvas, { willReadFrequently: true });
+    pageCtx.fillStyle = display.paperColor;
+    pageCtx.fillRect(0, 0, pageWidth, pageHeight);
+
+    if (!sourceCanvas || !layout) return pageCanvas;
+
+    const margins = computeMargins(layout, pageHeight / layout.ph);
+    const fitMode = page?.fitAxis === "width" || page?.fitAxis === "height" || page?.fitAxis === "inside"
+      ? page.fitAxis
+      : "inside";
+    const contentRect = page?.cover
+      ? { x: 0, y: 0, w: pageWidth, h: pageHeight }
+      : {
+          x: side === "left" ? margins.outerPx : margins.innerPx,
+          y: margins.topPx,
+          w: margins.twPx,
+          h: margins.thPx,
+        };
+    this.#drawPageContent(
+      pageCtx,
+      page,
+      contentRect.x,
+      contentRect.y,
+      contentRect.w,
+      contentRect.h,
+      effectEntry,
+      display.contentBlendMode,
+      {
+        mode: page?.cover
+          ? "fill"
+          : fitMode === "width"
+            ? "fit-width"
+            : fitMode === "height"
+              ? "fit-height"
+              : "fit",
+        clipToRect: !!page?.cover,
+        sourceCanvas,
+        crop: this.#getThumbnailCrop(page, sourceCanvas, effectEntry),
+      }
+    );
+    return pageCanvas;
+  }
+
+  getThumbnail(page, effectEntry, display, options = {}) {
+    const sourceCanvas = options.sourceCanvas ?? page?.thumbnailCanvas ?? page?.displayCanvas;
+    const layout = options.layout ?? null;
+    const side = options.side === "left" ? "left" : "right";
     const thumbHeight = 56;
-    const thumbWidth = Math.max(1, Math.round(thumbHeight * (page.aspectRatio || 1)));
+    const thumbWidth = layout
+      ? Math.max(1, Math.round(thumbHeight * (layout.pw / layout.ph)))
+      : Math.max(1, Math.round(thumbHeight * (page.aspectRatio || 1)));
     const thumbCanvas = document.createElement("canvas");
     thumbCanvas.width = thumbWidth;
     thumbCanvas.height = thumbHeight;
@@ -63,12 +124,24 @@ export class SpreadRenderer {
     thumbCtx.fillStyle = display.paperColor;
     thumbCtx.fillRect(0, 0, thumbWidth, thumbHeight);
 
-    const processedCanvas = this.#getProcessedCanvas(page, thumbWidth, thumbHeight, effectEntry);
-    if (processedCanvas) {
-      const prevBlend = thumbCtx.globalCompositeOperation;
-      thumbCtx.globalCompositeOperation = display.contentBlendMode;
-      thumbCtx.drawImage(processedCanvas, 0, 0, thumbWidth, thumbHeight);
-      thumbCtx.globalCompositeOperation = prevBlend;
+    if (sourceCanvas) {
+      if (layout) {
+        const placedPreview = this.getPlacedPagePreview(page, effectEntry, display, {
+          sourceCanvas,
+          layout,
+          side,
+          pageHeight: thumbHeight,
+        });
+        thumbCtx.drawImage(placedPreview, 0, 0, thumbWidth, thumbHeight);
+      } else {
+        const processedCanvas = this.#getProcessedCanvas(page, thumbWidth, thumbHeight, effectEntry, sourceCanvas);
+        if (processedCanvas) {
+          const prevBlend = thumbCtx.globalCompositeOperation;
+          thumbCtx.globalCompositeOperation = display.contentBlendMode;
+          thumbCtx.drawImage(processedCanvas, 0, 0, thumbWidth, thumbHeight);
+          thumbCtx.globalCompositeOperation = prevBlend;
+        }
+      }
     }
 
     return thumbCanvas;
@@ -98,20 +171,22 @@ export class SpreadRenderer {
       for (const [sideName, sideState] of Object.entries(sideStates)) {
         const effectEntry = effects[sideName];
         if (sideState.page) {
-          sideState.drawnRect = this.#drawPageContent(
-            ctx,
-            sideState.page,
-            sideState.contentRect.x,
-            sideState.contentRect.y,
-            sideState.contentRect.w,
-            sideState.contentRect.h,
-            effectEntry,
-            display.contentBlendMode,
-            {
-              mode: sideState.contentMode,
-              clipToRect: sideState.clipContent,
-            }
-          );
+          sideState.drawnRect = !sideState.page.srcCanvas && sideState.page.placedPreviewCanvas
+            ? this.#drawPlacedPreview(ctx, sideState, effectEntry)
+            : this.#drawPageContent(
+                ctx,
+                sideState.page,
+                sideState.contentRect.x,
+                sideState.contentRect.y,
+                sideState.contentRect.w,
+                sideState.contentRect.h,
+                effectEntry,
+                display.contentBlendMode,
+                {
+                  mode: sideState.contentMode,
+                  clipToRect: sideState.clipContent,
+                }
+              );
         } else if (showPlaceholder) {
           fillLorem(
             ctx,
@@ -191,37 +266,14 @@ export class SpreadRenderer {
   }
 
   #drawPageContent(ctx, page, x, y, w, h, effectEntry, blendMode, options) {
-    if (!page?.srcCanvas) return null;
+    const sourceCanvas = options.sourceCanvas ?? page?.displayCanvas;
+    if (!sourceCanvas) return null;
 
-    const { crop } = page;
-    const sourceCanvas = page.srcCanvas;
-    const sourceWidth = sourceCanvas.width - crop.left - crop.right;
-    const sourceHeight = sourceCanvas.height - crop.top - crop.bottom;
-    if (sourceWidth <= 0 || sourceHeight <= 0) return null;
-
-    const scale = options.mode === "fill"
-      ? Math.max(w / sourceWidth, h / sourceHeight)
-      : options.mode === "fit-width"
-        ? w / sourceWidth
-        : options.mode === "fit-height"
-          ? h / sourceHeight
-          : Math.min(w / sourceWidth, h / sourceHeight);
-
-    const drawX = Math.round(x + (w - sourceWidth * scale) / 2 - crop.left * scale);
-    const drawY = Math.round(y + (h - sourceHeight * scale) / 2 - crop.top * scale);
-    const drawW = Math.max(1, Math.round(sourceCanvas.width * scale));
-    const drawH = Math.max(1, Math.round(sourceCanvas.height * scale));
-    const processedCanvas = this.#getProcessedCanvas(page, drawW, drawH, effectEntry);
-
-    const cropX = Math.round(drawX + crop.left * drawW / sourceCanvas.width);
-    const cropY = Math.round(drawY + crop.top * drawH / sourceCanvas.height);
-    const cropRight = Math.round(drawX + (sourceCanvas.width - crop.right) * drawW / sourceCanvas.width);
-    const cropBottom = Math.round(drawY + (sourceCanvas.height - crop.bottom) * drawH / sourceCanvas.height);
-
-    const clipX0 = Math.round(x);
-    const clipY0 = Math.round(y);
-    const clipX1 = Math.round(x + w);
-    const clipY1 = Math.round(y + h);
+    const crop = options.crop ?? page.getCropFor(sourceCanvas);
+    const measurement = this.#measurePageContent(sourceCanvas, crop, x, y, w, h, options);
+    if (!measurement) return null;
+    const { drawX, drawY, drawW, drawH, cropX, cropY, cropRight, cropBottom, clipX0, clipY0, clipX1, clipY1, scale } = measurement;
+    const processedCanvas = this.#getProcessedCanvas(page, drawW, drawH, effectEntry, sourceCanvas);
 
     if (options.clipToRect) {
       ctx.save();
@@ -253,17 +305,61 @@ export class SpreadRenderer {
     };
   }
 
-  #getProcessedCanvas(page, targetWidth, targetHeight, effectEntry) {
-    if (!page?.srcCanvas) return null;
+  #drawPlacedPreview(ctx, sideState, effectEntry) {
+    const previewCanvas = sideState.page?.placedPreviewCanvas;
+    if (!previewCanvas) return null;
+    const measurement = this.#measurePageContent(
+      sideState.page.previewCanvas || sideState.page.displayCanvas,
+      sideState.page.getCropFor(sideState.page.previewCanvas || sideState.page.displayCanvas),
+      sideState.contentRect.x,
+      sideState.contentRect.y,
+      sideState.contentRect.w,
+      sideState.contentRect.h,
+      {
+        mode: sideState.contentMode,
+        clipToRect: sideState.clipContent,
+      }
+    );
+    ctx.drawImage(
+      previewCanvas,
+      Math.round(sideState.pageRect.x),
+      Math.round(sideState.pageRect.y),
+      Math.round(sideState.pageRect.w),
+      Math.round(sideState.pageRect.h)
+    );
+    if (!measurement) {
+      return {
+        x: Math.round(sideState.pageRect.x),
+        y: Math.round(sideState.pageRect.y),
+        w: Math.round(sideState.pageRect.w),
+        h: Math.round(sideState.pageRect.h),
+        fitScale: 1,
+        sw: previewCanvas.width,
+        sh: previewCanvas.height,
+      };
+    }
+    return {
+      x: measurement.visibleX,
+      y: measurement.visibleY,
+      w: Math.max(0, measurement.visibleRight - measurement.visibleX),
+      h: Math.max(0, measurement.visibleBottom - measurement.visibleY),
+      fitScale: measurement.scale,
+      sw: measurement.sourceWidthPx,
+      sh: measurement.sourceHeightPx,
+    };
+  }
 
-    const previewWidth = Math.max(1, Math.min(page.srcCanvas.width, Math.round(targetWidth || page.srcCanvas.width)));
-    const previewHeight = Math.max(1, Math.min(page.srcCanvas.height, Math.round(targetHeight || page.srcCanvas.height)));
+  #getProcessedCanvas(page, targetWidth, targetHeight, effectEntry, sourceCanvas = page?.displayCanvas) {
+    if (!sourceCanvas) return null;
+
+    const previewWidth = Math.max(1, Math.min(sourceCanvas.width, Math.round(targetWidth || sourceCanvas.width)));
+    const previewHeight = Math.max(1, Math.min(sourceCanvas.height, Math.round(targetHeight || sourceCanvas.height)));
     const cacheKey = `${effectEntry.key}|${previewWidth}x${previewHeight}`;
 
     let pageCache = this.effectCache.get(page);
-    if (!pageCache || pageCache.srcCanvas !== page.srcCanvas) {
+    if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
       pageCache = {
-        srcCanvas: page.srcCanvas,
+        srcCanvas: sourceCanvas,
         variants: new Map(),
       };
       this.effectCache.set(page, pageCache);
@@ -275,7 +371,7 @@ export class SpreadRenderer {
     const base = document.createElement("canvas");
     base.width = previewWidth;
     base.height = previewHeight;
-    get2dContext(base, { willReadFrequently: true }).drawImage(page.srcCanvas, 0, 0, previewWidth, previewHeight);
+    get2dContext(base, { willReadFrequently: true }).drawImage(sourceCanvas, 0, 0, previewWidth, previewHeight);
 
     const out = applyEffectsToCanvas(
       base,
@@ -290,6 +386,72 @@ export class SpreadRenderer {
       pageCache.variants.delete(oldestKey);
     }
     return out;
+  }
+
+  #measurePageContent(sourceCanvas, crop, x, y, w, h, options) {
+    if (!sourceCanvas) return null;
+    const sourceWidth = sourceCanvas.width - crop.left - crop.right;
+    const sourceHeight = sourceCanvas.height - crop.top - crop.bottom;
+    if (sourceWidth <= 0 || sourceHeight <= 0) return null;
+
+    const scale = options.mode === "fill"
+      ? Math.max(w / sourceWidth, h / sourceHeight)
+      : options.mode === "fit-width"
+        ? w / sourceWidth
+        : options.mode === "fit-height"
+          ? h / sourceHeight
+          : Math.min(w / sourceWidth, h / sourceHeight);
+
+    const drawX = Math.round(x + (w - sourceWidth * scale) / 2 - crop.left * scale);
+    const drawY = Math.round(y + (h - sourceHeight * scale) / 2 - crop.top * scale);
+    const drawW = Math.max(1, Math.round(sourceCanvas.width * scale));
+    const drawH = Math.max(1, Math.round(sourceCanvas.height * scale));
+    const cropX = Math.round(drawX + crop.left * drawW / sourceCanvas.width);
+    const cropY = Math.round(drawY + crop.top * drawH / sourceCanvas.height);
+    const cropRight = Math.round(drawX + (sourceCanvas.width - crop.right) * drawW / sourceCanvas.width);
+    const cropBottom = Math.round(drawY + (sourceCanvas.height - crop.bottom) * drawH / sourceCanvas.height);
+    const clipX0 = Math.round(x);
+    const clipY0 = Math.round(y);
+    const clipX1 = Math.round(x + w);
+    const clipY1 = Math.round(y + h);
+
+    return {
+      sourceWidthPx: sourceCanvas.width,
+      sourceHeightPx: sourceCanvas.height,
+      scale,
+      drawX,
+      drawY,
+      drawW,
+      drawH,
+      cropX,
+      cropY,
+      cropRight,
+      cropBottom,
+      clipX0,
+      clipY0,
+      clipX1,
+      clipY1,
+      visibleX: options.clipToRect ? Math.max(cropX, clipX0) : cropX,
+      visibleY: options.clipToRect ? Math.max(cropY, clipY0) : cropY,
+      visibleRight: options.clipToRect ? Math.min(cropRight, clipX1) : cropRight,
+      visibleBottom: options.clipToRect ? Math.min(cropBottom, clipY1) : cropBottom,
+    };
+  }
+
+  #getThumbnailCrop(page, sourceCanvas, effectEntry) {
+    if (!sourceCanvas) return { top: 0, left: 0, right: 0, bottom: 0 };
+    if (!page?.cropInitialized) {
+      const processedCanvas = this.#getProcessedCanvas(
+        page,
+        sourceCanvas.width,
+        sourceCanvas.height,
+        effectEntry,
+        sourceCanvas
+      );
+      return autoCrop(processedCanvas, page?.tolerance);
+    }
+
+    return page.getCropFor(sourceCanvas);
   }
 
   #drawPageSlice(img, sx, sy, sw, sh, dx, dy, dw, dh) {
