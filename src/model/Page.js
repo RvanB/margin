@@ -30,6 +30,7 @@ export class Page {
     previewCanvas = null,
     placedPreviewCanvas = null,
     thumbnailSourceCanvas = null,
+    displayCanvasOverride = null,
     aspectRatio = 1,
     crop = null,
     cropSourceWidth = 0,
@@ -46,6 +47,7 @@ export class Page {
     this.previewCanvas = previewCanvas;
     this.placedPreviewCanvas = placedPreviewCanvas;
     this.thumbnailSourceCanvas = thumbnailSourceCanvas;
+    this.displayCanvasOverride = displayCanvasOverride;
     this.loading = false;
     this.aspectRatio = aspectRatio;
     this.crop = crop ? { ...makeDefaultCrop(), ...crop } : makeDefaultCrop();
@@ -60,7 +62,7 @@ export class Page {
   }
 
   get displayCanvas() {
-    return this.srcCanvas || this.previewCanvas || null;
+    return this.displayCanvasOverride || this.srcCanvas || this.previewCanvas || null;
   }
 
   get thumbnailCanvas() {

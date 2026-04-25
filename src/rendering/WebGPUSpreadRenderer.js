@@ -1,4 +1,3 @@
-import { fillLorem } from "./text.js";
 import { drawPageBorder } from "./primitives.js";
 import { SpreadRenderer } from "./SpreadRenderer.js";
 
@@ -1393,20 +1392,6 @@ export class WebGPUSpreadRenderer {
     canvas.width = Math.round(2 * scene.margins.pagePxW);
     canvas.height = Math.round(scene.margins.pagePxH);
     const ctx = get2dContext(canvas);
-
-    if (scene.showPlaceholder) {
-      for (const sideName of ["left", "right"]) {
-        const sideState = scene.sideStates[sideName];
-        if (sideState.page) continue;
-        fillLorem(
-          ctx,
-          sideState.textblockRect.x,
-          sideState.textblockRect.y,
-          sideState.textblockRect.w,
-          sideState.textblockRect.h
-        );
-      }
-    }
 
     drawPageBorder(ctx, scene.margins.pagePxW);
     this.#markCanvasDirty(canvas);

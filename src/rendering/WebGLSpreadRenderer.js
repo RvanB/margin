@@ -1,4 +1,3 @@
-import { fillLorem } from "./text.js";
 import { drawPageBorder } from "./primitives.js";
 import { SpreadRenderer } from "./SpreadRenderer.js";
 
@@ -353,19 +352,6 @@ export class WebGLSpreadRenderer {
     const stageCtx = target.stageCtx;
 
     stageCtx.clearRect(0, 0, target.canvas.width, target.canvas.height);
-    if (margins.ok) {
-      for (const sideState of Object.values(sideStates)) {
-        if (!sideState.page && showPlaceholder) {
-          fillLorem(
-            stageCtx,
-            sideState.textblockRect.x,
-            sideState.textblockRect.y,
-            sideState.textblockRect.w,
-            sideState.textblockRect.h
-          );
-        }
-      }
-    }
     drawPageBorder(stageCtx, margins.pagePxW);
 
     this.#clearTarget(target, display.paperColor);

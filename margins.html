@@ -124,7 +124,7 @@
       <span style="font-size:11px">Show content (C)</span>
     </label>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
-      <input type="checkbox" id="show-margin-arrows" checked>
+      <input type="checkbox" id="show-margin-arrows">
       <span style="font-size:11px">Show margin arrows (M)</span>
     </label>
     <div class="dim-row" style="margin-top:10px;margin-bottom:0;align-items:center">
@@ -236,17 +236,17 @@
     <div class="dim-row" style="align-items:center">
       <label>black</label>
       <input type="range" id="levels-black" min="0" max="254" step="1" value="0">
-      <span class="unit" id="levels-black-val">0</span>
+      <input type="number" id="levels-black-num" class="value-input" min="0" max="254" step="1" value="0">
     </div>
     <div class="dim-row" style="align-items:center">
       <label>gray</label>
       <input type="range" id="levels-gray" min="1" max="254" step="1" value="128">
-      <span class="unit" id="levels-gray-val">128</span>
+      <input type="number" id="levels-gray-num" class="value-input" min="1" max="254" step="1" value="128">
     </div>
     <div class="dim-row" style="align-items:center;margin-bottom:0">
       <label>white</label>
       <input type="range" id="levels-white" min="1" max="255" step="1" value="255">
-      <span class="unit" id="levels-white-val">255</span>
+      <input type="number" id="levels-white-num" class="value-input" min="1" max="255" step="1" value="255">
     </div>
     <div id="trim-header" style="margin-top:12px">
       <span class="section-label" style="margin:0">Trim</span>

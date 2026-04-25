@@ -2,10 +2,11 @@ import { Book } from "../model/Book.js";
 import { Page, makeDefaultPageEffects, normalizeFitAxis } from "../model/Page.js";
 import { autoCrop, getSelectionGate, normalizeHexColor, normalizeLevels } from "../effects/cpu.js";
 import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
-import { downscaleCanvasToMaxEdge } from "../loading/downscaleCanvas.js";
+import { downscaleCanvasToMaxEdge, downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { loadImageFile } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
 import { getPdfPageAspectRatio, loadPdfDocument } from "../loading/pdfLoader.js";
+import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins, computeScale } from "../rendering/layout.js";
 import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
 import { renderOverlay } from "../rendering/OverlayRenderer.js";
@@ -26,7 +27,7 @@ const CONTENT_ZOOM_MIN = 0.5;
 const CONTENT_ZOOM_MAX = 6;
 const CONTENT_ZOOM_STEP = 1.25;
 const MAX_RENDER_CANVAS_EDGE = 8192;
-const PLACED_PREVIEW_PAGE_HEIGHT = 96;
+const INTERACTIVE_PREVIEW_SCALE = 0.25;
 
 function formatMeasuredRgb({ r, g, b }) {
   return `rgb ${r}, ${g}, ${b}`;
@@ -95,7 +96,7 @@ export class App {
       hoverHandle: null,
       spreadRects: null,
       spreadSideStates: null,
-      showMarginArrows: true,
+      showMarginArrows: false,
       showLayoutContent: true,
       showVdG: false,
     };
@@ -107,10 +108,12 @@ export class App {
     this.listeners = [];
     this.dragHandle = null;
     this.contentEffectCaches = new WeakMap();
+    this.dirtyPlacedPreviewPageIndexes = new Set();
     this.measuredColor = buildMeasuredColor("#ffffff");
     this.contentZoom = 1;
     this.renderZoom = 1;
     this.previewRedrawTimer = 0;
+    this.interactivePreviewTimer = 0;
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.previewLayoutKey = "";
     this.animationCompletionScheduled = false;
@@ -165,6 +168,21 @@ export class App {
     return this.toolbar?.querySelector(`#${id}`) || document.getElementById(id);
   }
 
+  markPlacedPreviewDirty(pageOrIndex) {
+    const pageIndex = typeof pageOrIndex === "number"
+      ? pageOrIndex
+      : this.book.pages.indexOf(pageOrIndex);
+    if (pageIndex < 0) return;
+    this.dirtyPlacedPreviewPageIndexes.add(pageIndex);
+  }
+
+  flushDirtyPlacedPreviews() {
+    if (!this.dirtyPlacedPreviewPageIndexes.size) return;
+    const dirtyPageIndexes = [...this.dirtyPlacedPreviewPageIndexes];
+    this.dirtyPlacedPreviewPageIndexes.clear();
+    dirtyPageIndexes.forEach(pageIndex => this.refreshPlacedPreview(pageIndex));
+  }
+
   getSelectedPages() {
     if (!this.uiState.selectedPageIdxs.size) {
       return [this.book.pages[this.uiState.editingPageIdx]].filter(Boolean);
@@ -176,6 +194,55 @@ export class App {
 
   getEditingPage() {
     return this.book.pages[this.uiState.editingPageIdx] ?? null;
+  }
+
+  getInteractivePreviewCanvas(page) {
+    if (!page) return null;
+    if (!page.srcCanvas) return page.previewCanvas || null;
+    const targetMaxEdge = Math.max(1, Math.round(Math.max(page.srcCanvas.width, page.srcCanvas.height) * INTERACTIVE_PREVIEW_SCALE));
+    if (
+      page.interactivePreviewCanvas &&
+      page.interactivePreviewSourceCanvas === page.srcCanvas &&
+      page.interactivePreviewMaxEdge === targetMaxEdge
+    ) {
+      return page.interactivePreviewCanvas;
+    }
+    const interactiveCanvas = downscaleCanvasToMaxEdgeSync(page.srcCanvas, targetMaxEdge) || page.previewCanvas || page.srcCanvas;
+    page.interactivePreviewCanvas = interactiveCanvas;
+    page.interactivePreviewSourceCanvas = page.srcCanvas;
+    page.interactivePreviewMaxEdge = targetMaxEdge;
+    return interactiveCanvas;
+  }
+
+  beginInteractiveContentPreview(pages = this.getSelectedPages(), delay = 120) {
+    let activated = false;
+    for (const page of pages) {
+      const interactiveCanvas = this.getInteractivePreviewCanvas(page);
+      if (!interactiveCanvas) continue;
+      if (page.displayCanvasOverride === interactiveCanvas) continue;
+      page.displayCanvasOverride = interactiveCanvas;
+      activated = true;
+    }
+    if (!activated && !this.interactivePreviewTimer) return;
+    if (this.interactivePreviewTimer) clearTimeout(this.interactivePreviewTimer);
+    this.interactivePreviewTimer = setTimeout(() => {
+      this.interactivePreviewTimer = 0;
+      this.endInteractiveContentPreview();
+    }, delay);
+  }
+
+  endInteractiveContentPreview({ redraw = true } = {}) {
+    if (this.interactivePreviewTimer) {
+      clearTimeout(this.interactivePreviewTimer);
+      this.interactivePreviewTimer = 0;
+    }
+    let changed = false;
+    for (const page of this.book.pages) {
+      if (!page?.displayCanvasOverride) continue;
+      page.displayCanvasOverride = null;
+      changed = true;
+    }
+    if (changed && redraw) this.redraw();
   }
 
   getEffectEntry(page) {
@@ -489,6 +556,7 @@ export class App {
     const handleSelectionControlEvent = event => {
       const control = event.target;
       if (!control?.id) return;
+      const isNumericField = control.id.endsWith("-num");
       const baseId = control.id.endsWith("-num") ? control.id.slice(0, -4) : control.id;
       if (!selectionControlIds.has(baseId)) return;
       if (control.value === "" || Number.isNaN(Number(control.value))) {
@@ -496,6 +564,9 @@ export class App {
         return;
       }
       this.setSelectionControlUI(baseId, control.value);
+      if (isNumericField && event.type === "input") return;
+      if (event.type === "input") this.beginInteractiveContentPreview();
+      else this.endInteractiveContentPreview({ redraw: false });
       applySelectionFromUI();
     };
     this.addListener(this.toolbar, "input", handleSelectionControlEvent);
@@ -524,6 +595,7 @@ export class App {
     });
 
     this.addListener("neutralize-color", "input", () => {
+      this.beginInteractiveContentPreview();
       const color = document.getElementById("neutralize-color").value;
       const pages = this.getSelectedPages();
       for (const page of pages) {
@@ -535,6 +607,7 @@ export class App {
     });
 
     this.addListener("neutralize-color", "change", () => {
+      this.endInteractiveContentPreview({ redraw: false });
       const color = document.getElementById("neutralize-color").value;
       const pages = this.getSelectedPages();
       for (const page of pages) {
@@ -546,10 +619,16 @@ export class App {
       this.redraw();
     });
 
-    const applyLevelsFromUI = changedId => {
-      let black = parseInt(document.getElementById("levels-black").value, 10);
-      let gray = parseInt(document.getElementById("levels-gray").value, 10);
-      let white = parseInt(document.getElementById("levels-white").value, 10);
+    const readLevelsFromUI = changedId => {
+      const readLevelControl = id => {
+        const el = this.getToolbarControl(id);
+        if (!el) return NaN;
+        if ("valueAsNumber" in el && Number.isFinite(el.valueAsNumber)) return Math.round(el.valueAsNumber);
+        return parseInt(el.value, 10);
+      };
+      let black = readLevelControl("levels-black");
+      let gray = readLevelControl("levels-gray");
+      let white = readLevelControl("levels-white");
 
       if (black >= white) {
         if (changedId === "levels-white") black = Math.max(0, white - 1);
@@ -561,6 +640,20 @@ export class App {
 
       const levels = normalizeLevels(black, gray, white);
       this.setLevelsUI(levels);
+      return levels;
+    };
+
+    const previewLevelsFromUI = changedId => {
+      const editingPage = this.getEditingPage();
+      if (editingPage) this.beginInteractiveContentPreview([editingPage]);
+      const levels = readLevelsFromUI(changedId);
+      this.applyLevelsToPage(editingPage, levels);
+      this.redraw();
+    };
+
+    const commitLevelsFromUI = changedId => {
+      this.endInteractiveContentPreview({ redraw: false });
+      const levels = readLevelsFromUI(changedId);
       const pages = this.getSelectedPages();
       for (const page of pages) {
         this.applyLevelsToPage(page, levels);
@@ -570,10 +663,37 @@ export class App {
       this.redraw();
     };
 
-    ["levels-black", "levels-gray", "levels-white"].forEach(id => {
-      this.addListener(id, "input", () => applyLevelsFromUI(id));
-      this.addListener(id, "change", () => applyLevelsFromUI(id));
-    });
+    const levelControlIds = new Set([
+      "levels-black",
+      "levels-gray",
+      "levels-white",
+    ]);
+    const handleLevelsControlEvent = event => {
+      const control = event.target;
+      if (!control?.id) return;
+      const isNumericField = control.id.endsWith("-num");
+      const baseId = control.id.endsWith("-num") ? control.id.slice(0, -4) : control.id;
+      if (!levelControlIds.has(baseId)) return;
+      if (control.value === "" || Number.isNaN(Number(control.value))) {
+        if (event.type === "change") {
+          const page = this.getEditingPage();
+          if (page) {
+            this.setLevelsUI({
+              black: page.effects.levelsBlack,
+              gray: page.effects.levelsGray,
+              white: page.effects.levelsWhite,
+            });
+          }
+        }
+        return;
+      }
+      this.setLevelsControlUI(baseId, control.value);
+      if (isNumericField && event.type === "input") return;
+      if (event.type === "input") previewLevelsFromUI(baseId);
+      else commitLevelsFromUI(baseId);
+    };
+    this.addListener(this.toolbar, "input", handleLevelsControlEvent);
+    this.addListener(this.toolbar, "change", handleLevelsControlEvent);
 
     this.addListener("cover-check", "change", event => {
       for (const page of this.getSelectedPages()) page.cover = event.target.checked;
@@ -594,7 +714,7 @@ export class App {
   }
 
   refreshAffectedThumbnails(pages) {
-    for (const page of pages) this.refreshPlacedPreview(page);
+    for (const page of pages) this.markPlacedPreviewDirty(page);
   }
 
   getPlacedPreviewLayoutKey() {
@@ -635,9 +755,10 @@ export class App {
         sourceCanvas,
         layout: this.book.layout,
         side: pageIndex % 2 === 1 ? "left" : "right",
-        pageHeight: PLACED_PREVIEW_PAGE_HEIGHT,
+        pageHeight: SHARED_PREVIEW_SIZE,
       }
     );
+    this.dirtyPlacedPreviewPageIndexes.delete(pageIndex);
     this.pageStrip.invalidateThumbnail(page);
   }
 
@@ -780,15 +901,22 @@ export class App {
       ["levels-black", levels.black],
       ["levels-gray", levels.gray],
       ["levels-white", levels.white],
-      ["levels-black-val", levels.black],
-      ["levels-gray-val", levels.gray],
-      ["levels-white-val", levels.white],
     ];
-    mappings.forEach(([id, value]) => {
-      const el = this.getToolbarControl(id);
+    mappings.forEach(([id, value]) => this.setLevelsControlUI(id, value));
+  }
+
+  setLevelsControlUI(id, value) {
+    [id, `${id}-num`].forEach(controlId => {
+      const el = this.getToolbarControl(controlId);
       if (!el) return;
-      if ("value" in el) el.value = value;
-      else el.textContent = String(value);
+      const numericValue = Number(value);
+      if ("valueAsNumber" in el && Number.isFinite(numericValue)) {
+        el.valueAsNumber = numericValue;
+      } else if ("value" in el) {
+        el.value = String(value);
+      } else {
+        el.textContent = String(value);
+      }
     });
   }
 
@@ -797,7 +925,7 @@ export class App {
     const tolerance = parseInt(this.getToolbarControl("trim-slider")?.value, 10);
     page.tolerance = tolerance;
     this.recomputeTrimFromEffects(page, tolerance);
-    this.refreshPlacedPreview(page);
+    this.markPlacedPreviewDirty(page);
     this.setTrimUI(tolerance);
   }
 
@@ -828,19 +956,19 @@ export class App {
     page.effects.selectionSatHigh = selection.selectionSatHigh;
     page.effects.selectionHueLow = selection.selectionHueLow;
     page.effects.selectionHueHigh = selection.selectionHueHigh;
-    this.refreshPlacedPreview(page);
+    this.markPlacedPreviewDirty(page);
   }
 
   applyBwEnabledToPage(page, enabled = false) {
     if (!page) return;
     page.effects.bwEnabled = !!enabled;
-    this.refreshPlacedPreview(page);
+    this.markPlacedPreviewDirty(page);
   }
 
   applyNeutralizeColorToPage(page, color) {
     if (!page) return;
     page.effects.neutralizeColor = normalizeHexColor(color);
-    this.refreshPlacedPreview(page);
+    this.markPlacedPreviewDirty(page);
   }
 
   applyLevelsToPage(page, levels) {
@@ -848,7 +976,7 @@ export class App {
     page.effects.levelsBlack = levels.black;
     page.effects.levelsGray = levels.gray;
     page.effects.levelsWhite = levels.white;
-    this.refreshPlacedPreview(page);
+    this.markPlacedPreviewDirty(page);
   }
 
   getContentEffectLayerCache(page) {
@@ -868,6 +996,8 @@ export class App {
     const targetSpread = Math.floor((pageIndex + 1) / 2);
     if (this.uiState.appMode === "content") {
       if (event.metaKey || event.ctrlKey) {
+        this.endInteractiveContentPreview({ redraw: false });
+        this.flushDirtyPlacedPreviews();
         if (this.uiState.selectedPageIdxs.has(pageIndex)) {
           this.uiState.selectedPageIdxs.delete(pageIndex);
           if (this.uiState.editingPageIdx === pageIndex) {
@@ -884,6 +1014,8 @@ export class App {
       }
 
       if (event.shiftKey) {
+        this.endInteractiveContentPreview({ redraw: false });
+        this.flushDirtyPlacedPreviews();
         const from = Math.min(this.uiState.editingPageIdx, pageIndex);
         const to = Math.max(this.uiState.editingPageIdx, pageIndex);
         for (let i = from; i <= to; i += 1) this.uiState.selectedPageIdxs.add(i);
@@ -893,6 +1025,8 @@ export class App {
         return;
       }
 
+      this.endInteractiveContentPreview({ redraw: false });
+      this.flushDirtyPlacedPreviews();
       this.uiState.editingPageIdx = pageIndex;
       this.uiState.selectedPageIdxs = new Set([pageIndex]);
       this.syncPageUI();
@@ -913,6 +1047,8 @@ export class App {
       ? preferredPageIndex
       : (left.pageIndex >= 0 ? left.pageIndex : right.pageIndex);
     if (pageIndex < 0 || pageIndex >= this.book.pages.length) return;
+    this.endInteractiveContentPreview({ redraw: false });
+    this.flushDirtyPlacedPreviews();
     this.uiState.editingPageIdx = pageIndex;
     this.uiState.selectedPageIdxs = new Set([pageIndex]);
     this.syncPageUI();
@@ -922,6 +1058,7 @@ export class App {
     const clampedTarget = Math.max(0, Math.min(targetSpread, this.book.numSpreads() - 1));
     if (clampedTarget === this.getEffectiveSpread()) return;
 
+    this.endInteractiveContentPreview({ redraw: false });
     this.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, { allowHighRes: false });
     this.selectSpreadPage(clampedTarget, preferredPageIndex);
 
@@ -1186,7 +1323,7 @@ export class App {
       }
 
       const canvas = await loadImageFile(file);
-      const thumbnailSourceCanvas = await downscaleCanvasToMaxEdge(canvas, 96);
+      const thumbnailSourceCanvas = await downscaleCanvasToMaxEdge(canvas, SHARED_PREVIEW_SIZE);
       this.book.addPage(new Page({
         source: { type: "image", file },
         srcCanvas: canvas,
@@ -1238,6 +1375,8 @@ export class App {
 
   switchMode(mode) {
     if (mode === this.uiState.appMode) return;
+    if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
+    this.endInteractiveContentPreview({ redraw: false });
     this.spreadRenderer.stopAnimation();
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
@@ -1342,6 +1481,7 @@ export class App {
 
   handleCanvasMouseDown(event) {
     if (this.spreadRenderer.isAnimating) return;
+    this.endInteractiveContentPreview({ redraw: false });
     const { x, y } = this.getCanvasCoords(event);
 
     if (this.uiState.appMode === "layout") {
@@ -1359,12 +1499,14 @@ export class App {
     const handleHit = this.getHandleHitTarget(x, y);
     const spreadHit = handleHit ?? this.getSpreadHitTarget(x, y);
     if (!spreadHit?.rect) {
+      this.flushDirtyPlacedPreviews();
       this.switchMode("layout");
       return;
     }
 
     const pageIndex = spreadHit.rect.pageIndex;
     if (this.uiState.editingPageIdx !== pageIndex || this.uiState.selectedPageIdxs.size > 1) {
+      this.flushDirtyPlacedPreviews();
       this.uiState.editingPageIdx = pageIndex;
       this.uiState.selectedPageIdxs = new Set([pageIndex]);
       this.syncPageUI();

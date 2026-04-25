@@ -54,6 +54,14 @@ function applyLevelsChannel(value, blackPoint, grayPoint, whitePoint) {
   return Math.round(Math.pow(normalized, gamma) * 255);
 }
 
+function buildLevelsLookup(levels) {
+  const lookup = new Uint8ClampedArray(256);
+  for (let value = 0; value < 256; value += 1) {
+    lookup[value] = applyLevelsChannel(value, levels.black, levels.gray, levels.white);
+  }
+  return lookup;
+}
+
 function getSaturation(r, g, b) {
   const max = Math.max(r, g, b);
   const min = Math.min(r, g, b);
@@ -138,6 +146,7 @@ export function levelsEffect(blackPoint, grayPoint, whitePoint, selection = {}) 
   const levels = normalizeLevels(blackPoint, grayPoint, whitePoint);
   if (levels.black === 0 && levels.gray === 128 && levels.white === 255) return null;
   const gate = getSelectionGate(selection, selection?.bwThreshold ?? 100);
+  const levelLookup = buildLevelsLookup(levels);
 
   return canvas => {
     const out = cloneCanvas(canvas);
@@ -147,9 +156,9 @@ export function levelsEffect(blackPoint, grayPoint, whitePoint, selection = {}) 
 
     for (let i = 0; i < data.length; i += 4) {
       if (!pixelMatchesSelection(data[i], data[i + 1], data[i + 2], gate)) continue;
-      data[i] = applyLevelsChannel(data[i], levels.black, levels.gray, levels.white);
-      data[i + 1] = applyLevelsChannel(data[i + 1], levels.black, levels.gray, levels.white);
-      data[i + 2] = applyLevelsChannel(data[i + 2], levels.black, levels.gray, levels.white);
+      data[i] = levelLookup[data[i]];
+      data[i + 1] = levelLookup[data[i + 1]];
+      data[i + 2] = levelLookup[data[i + 2]];
     }
 
     outCtx.putImageData(imageData, 0, 0);
@@ -162,6 +171,7 @@ export function selectionEffects(selection = {}, { bwEnabled = false, black = 0,
   const hasLevels = !(levels.black === 0 && levels.gray === 128 && levels.white === 255);
   if (!bwEnabled && !hasLevels) return null;
   const gate = getSelectionGate(selection, selection?.bwThreshold ?? 100);
+  const levelLookup = hasLevels ? buildLevelsLookup(levels) : null;
 
   return canvas => {
     const out = cloneCanvas(canvas);
@@ -183,9 +193,9 @@ export function selectionEffects(selection = {}, { bwEnabled = false, black = 0,
         b = grayValue;
       }
       if (hasLevels) {
-        r = applyLevelsChannel(r, levels.black, levels.gray, levels.white);
-        g = applyLevelsChannel(g, levels.black, levels.gray, levels.white);
-        b = applyLevelsChannel(b, levels.black, levels.gray, levels.white);
+        r = levelLookup[r];
+        g = levelLookup[g];
+        b = levelLookup[b];
       }
       data[i] = r;
       data[i + 1] = g;

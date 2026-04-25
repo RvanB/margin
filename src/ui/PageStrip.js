@@ -1,3 +1,5 @@
+import { PAGE_STRIP_DISPLAY_HEIGHT, SHARED_PREVIEW_SIZE } from "../previewSizing.js";
+
 export class PageStrip {
   constructor(container, { onPageClick, getEffectEntry, getDisplay, getLayout }) {
     this.container = container;
@@ -67,14 +69,17 @@ export class PageStrip {
   }
 
   #makeThumbCanvas(page, pageIndex, renderer) {
-    const thumbHeight = 56;
+    const thumbHeight = SHARED_PREVIEW_SIZE;
     const layout = this.getLayout();
     const thumbWidth = layout
       ? Math.max(1, Math.round(thumbHeight * (layout.pw / layout.ph)))
       : Math.max(1, Math.round(thumbHeight * (page.aspectRatio || 1)));
+    const displayWidth = Math.max(1, Math.round(thumbWidth * (PAGE_STRIP_DISPLAY_HEIGHT / thumbHeight)));
     const canvas = document.createElement("canvas");
     canvas.width = thumbWidth;
     canvas.height = thumbHeight;
+    canvas.style.width = `${displayWidth}px`;
+    canvas.style.height = `${PAGE_STRIP_DISPLAY_HEIGHT}px`;
     const ctx = canvas.getContext("2d");
     const display = this.getDisplay();
     ctx.fillStyle = display.paperColor;

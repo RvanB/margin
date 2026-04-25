@@ -1,10 +1,11 @@
 import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
+import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { renderPdfPage, requestPdfDocumentCleanup } from "./pdfLoader.js";
 
 export class LazyPageLoader {
-  constructor(book, onPageReady, { pdfRenderScale = 1.5, pdfPreviewSourceScale = 0.25, pdfPreviewMaxEdge = 96 } = {}) {
+  constructor(book, onPageReady, { pdfRenderScale = 1.5, pdfPreviewSourceScale = 0.25, pdfPreviewMaxEdge = SHARED_PREVIEW_SIZE } = {}) {
     this.book = book;
     this.onPageReady = onPageReady;
     this.pdfRenderScale = pdfRenderScale;

@@ -1,7 +1,7 @@
-import { fillLorem } from "./text.js";
 import { drawPageBorder } from "./primitives.js";
 import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
+import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins } from "./layout.js";
 
 const TURN_EASING_POWER = 3;
@@ -59,7 +59,7 @@ export class SpreadRenderer {
     const sourceCanvas = options.sourceCanvas ?? page?.previewCanvas ?? page?.displayCanvas;
     const layout = options.layout ?? null;
     const side = options.side === "left" ? "left" : "right";
-    const pageHeight = Math.max(1, Math.round(options.pageHeight || 96));
+    const pageHeight = Math.max(1, Math.round(options.pageHeight || SHARED_PREVIEW_SIZE));
     const pageWidth = layout
       ? Math.max(1, Math.round(pageHeight * (layout.pw / layout.ph)))
       : Math.max(1, Math.round(pageHeight * (page.aspectRatio || 1)));
@@ -113,7 +113,7 @@ export class SpreadRenderer {
     const sourceCanvas = options.sourceCanvas ?? page?.thumbnailCanvas ?? page?.displayCanvas;
     const layout = options.layout ?? null;
     const side = options.side === "left" ? "left" : "right";
-    const thumbHeight = 56;
+    const thumbHeight = SHARED_PREVIEW_SIZE;
     const thumbWidth = layout
       ? Math.max(1, Math.round(thumbHeight * (layout.pw / layout.ph)))
       : Math.max(1, Math.round(thumbHeight * (page.aspectRatio || 1)));
@@ -187,14 +187,6 @@ export class SpreadRenderer {
                   clipToRect: sideState.clipContent,
                 }
               );
-        } else if (showPlaceholder) {
-          fillLorem(
-            ctx,
-            sideState.textblockRect.x,
-            sideState.textblockRect.y,
-            sideState.textblockRect.w,
-            sideState.textblockRect.h
-          );
         }
       }
     }
