@@ -126,7 +126,7 @@ export class LazyPageLoader {
     const requestedScale = Math.max(
       minimumHighResScale,
       targetPdfRenderScale || minimumHighResScale
-    );
+    ) * 2;
     if (!page || page.source?.type !== "pdf") return;
     page.requestedPdfRenderScale = Math.max(page.requestedPdfRenderScale || 0, requestedScale);
     if (page.loading) return;
