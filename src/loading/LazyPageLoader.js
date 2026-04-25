@@ -2,6 +2,7 @@ import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
+import { loadImageFile } from "./imageLoader.js";
 import { renderPdfPage, requestPdfDocumentCleanup } from "./pdfLoader.js";
 
 export class LazyPageLoader {
@@ -128,6 +129,10 @@ export class LazyPageLoader {
 
   async #ensurePageLoaded(pageIndex, targetPdfRenderScale = this.pdfRenderScale) {
     const page = this.book.pages[pageIndex];
+    if (page?.source?.type === "image") {
+      await this.#ensureImagePageLoaded(pageIndex);
+      return;
+    }
     const minimumHighResScale = this.pdfRenderScale * this.#getHighResPixelRatio();
     const requestedScale = Math.max(
       minimumHighResScale,
@@ -182,6 +187,33 @@ export class LazyPageLoader {
     }
   }
 
+  async #ensureImagePageLoaded(pageIndex) {
+    const page = this.book.pages[pageIndex];
+    if (!page || page.source?.type !== "image" || page.loading || page.srcCanvas) return;
+
+    page.loading = true;
+    try {
+      const canvas = await loadImageFile(page.source.file);
+      if (!this.keepPageIndexes.has(pageIndex)) {
+        page.loading = false;
+        canvas.width = 0;
+        canvas.height = 0;
+        return;
+      }
+      page.srcCanvas = canvas;
+      page.aspectRatio = canvas.width / canvas.height;
+      page.loading = false;
+      if (!page.cropInitialized || page.cropDirty) {
+        page.setCropFor(canvas, autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance));
+        page.cropInitialized = true;
+      }
+      this.onPageReady?.(pageIndex);
+    } catch (error) {
+      page.loading = false;
+      console.error(`Failed to load image page ${page.source?.file?.name || pageIndex}:`, error);
+    }
+  }
+
   #requestSpreadCleanupIfReady(pageIndex, targetPdfRenderScale) {
     const spreadIndex = Math.floor((pageIndex + 1) / 2);
     if (spreadIndex !== this.lastEnsuredSpread) return;
@@ -203,11 +235,17 @@ export class LazyPageLoader {
 
   #unloadPage(pageIndex) {
     const page = this.book.pages[pageIndex];
-    if (!page || !page.srcCanvas || page.source?.type !== "pdf") return;
+    if (!page || !page.srcCanvas) return;
     page.srcCanvas.width = 0;
     page.srcCanvas.height = 0;
     page.srcCanvas = null;
-    page.loadedPdfRenderScale = 0;
-    page.requestedPdfRenderScale = 0;
+    page.displayCanvasOverride = null;
+    page.interactivePreviewCanvas = null;
+    page.interactivePreviewSourceCanvas = null;
+    page.interactivePreviewMaxEdge = 0;
+    if (page.source?.type === "pdf") {
+      page.loadedPdfRenderScale = 0;
+      page.requestedPdfRenderScale = 0;
+    }
   }
 }

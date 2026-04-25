@@ -2,8 +2,8 @@ import { Book } from "../model/Book.js";
 import { Page, makeDefaultPageEffects, normalizeFitAxis } from "../model/Page.js";
 import { autoCrop, getSelectionGate, normalizeHexColor, normalizeLevels } from "../effects/cpu.js";
 import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
-import { downscaleCanvasToMaxEdge, downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
-import { loadImageFile } from "../loading/imageLoader.js";
+import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
+import { loadImagePreview } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
 import { getPdfPageAspectRatio, loadPdfDocument } from "../loading/pdfLoader.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
@@ -1322,18 +1322,17 @@ export class App {
         continue;
       }
 
-      const canvas = await loadImageFile(file);
-      const thumbnailSourceCanvas = await downscaleCanvasToMaxEdge(canvas, SHARED_PREVIEW_SIZE);
+      const { canvas: thumbnailSourceCanvas, width, height } = await loadImagePreview(file, SHARED_PREVIEW_SIZE);
       this.book.addPage(new Page({
         source: { type: "image", file },
-        srcCanvas: canvas,
         previewCanvas: thumbnailSourceCanvas,
         thumbnailSourceCanvas,
-        aspectRatio: canvas.width / canvas.height,
-        crop: autoCrop(applyEffectsToCanvas(canvas, makeDefaultPageEffects()), 1),
-        cropSourceWidth: canvas.width,
-        cropSourceHeight: canvas.height,
+        aspectRatio: width / height,
+        crop: autoCrop(applyEffectsToCanvas(thumbnailSourceCanvas, makeDefaultPageEffects()), 1),
+        cropSourceWidth: thumbnailSourceCanvas.width,
+        cropSourceHeight: thumbnailSourceCanvas.height,
         cropInitialized: true,
+        cropDirty: true,
         tolerance: 1,
         effects: makeDefaultPageEffects(),
       }));
