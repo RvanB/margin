@@ -46,21 +46,26 @@ export async function loadPdfDocument(buffer) {
 
 export async function renderPdfPage(pdfDoc, pageNum, scale) {
   const page = await pdfDoc.getPage(pageNum);
-  const viewport = page.getViewport({ scale });
-  const canvas = document.createElement("canvas");
-  canvas.width = viewport.width;
-  canvas.height = viewport.height;
-  const renderTask = page.render({
-    canvasContext: get2dContext(canvas, { willReadFrequently: true }),
-    viewport,
-  });
-  renderTask.onContinue = continueCallback => {
-    if (typeof globalThis.requestIdleCallback === "function") {
-      globalThis.requestIdleCallback(() => continueCallback(), { timeout: 32 });
-    } else {
-      setTimeout(() => continueCallback(), 0);
-    }
-  };
-  await renderTask.promise;
-  return canvas;
+  try {
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const renderTask = page.render({
+      canvasContext: get2dContext(canvas, { willReadFrequently: true }),
+      viewport,
+    });
+    renderTask.onContinue = continueCallback => {
+      if (typeof globalThis.requestIdleCallback === "function") {
+        globalThis.requestIdleCallback(() => continueCallback(), { timeout: 32 });
+      } else {
+        setTimeout(() => continueCallback(), 0);
+      }
+    };
+    await renderTask.promise;
+    return canvas;
+  } finally {
+    page.cleanup?.();
+    pdfDoc.cleanup?.();
+  }
 }

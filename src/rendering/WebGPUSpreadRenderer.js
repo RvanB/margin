@@ -377,6 +377,7 @@ export class WebGPUSpreadRenderer {
     this.lastRenderArgs = null;
     this.clearColor = [1, 1, 1, 1];
     this.depthTexture = null;
+    this.frameDisposables = [];
     setBackendName(this.backendName);
 
     if (!("gpu" in navigator)) {
@@ -1278,6 +1279,7 @@ export class WebGPUSpreadRenderer {
     pass.setBindGroup(0, bindGroup);
     pass.setVertexBuffer(0, geometry.vertexBuffer);
     pass.draw(geometry.vertexCount);
+    this.frameDisposables.push(uniformBuffer);
   }
 
   #getPageSurfaceCanvas(scene, sideState, side) {
@@ -1440,6 +1442,7 @@ export class WebGPUSpreadRenderer {
     pass.setBindGroup(0, bindGroup);
     pass.setVertexBuffer(0, vertexBuffer);
     pass.draw(6);
+    this.frameDisposables.push(vertexBuffer);
   }
 
   #getQuadBindGroup(sourceCanvas) {
@@ -1470,6 +1473,10 @@ export class WebGPUSpreadRenderer {
         cached.sourceVersion = sourceVersion;
       }
       return cached;
+    }
+
+    if (cached) {
+      cached.texture.destroy();
     }
 
     const texture = this.device.createTexture({
@@ -1531,10 +1538,13 @@ export class WebGPUSpreadRenderer {
   }
 
   #withFrame(drawFn) {
+    this.frameDisposables = [];
     const encoder = this.device.createCommandEncoder();
     const targetView = this.context.getCurrentTexture().createView();
     drawFn(encoder, targetView);
     this.device.queue.submit([encoder.finish()]);
+    for (const resource of this.frameDisposables) resource.destroy();
+    this.frameDisposables = [];
   }
 
   #beginPass(encoder, targetView, { clearColor = true, clearDepth = true } = {}) {

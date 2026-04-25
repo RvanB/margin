@@ -533,14 +533,12 @@ export class WebGLSpreadRenderer {
 
   #getTexture(target, sourceCanvas, cacheTexture) {
     const gl = target.gl;
+    const cached = cacheTexture ? target.textureCache.get(sourceCanvas) : null;
 
-    if (cacheTexture) {
-      const cached = target.textureCache.get(sourceCanvas);
-      if (cached &&
-          cached.width === sourceCanvas.width &&
-          cached.height === sourceCanvas.height) {
-        return cached.texture;
-      }
+    if (cached &&
+        cached.width === sourceCanvas.width &&
+        cached.height === sourceCanvas.height) {
+      return cached.texture;
     }
 
     const texture = gl.createTexture();
@@ -552,6 +550,7 @@ export class WebGLSpreadRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
 
     if (cacheTexture) {
+      if (cached?.texture) gl.deleteTexture(cached.texture);
       target.textureCache.set(sourceCanvas, {
         texture,
         width: sourceCanvas.width,

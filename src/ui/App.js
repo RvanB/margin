@@ -1136,11 +1136,16 @@ export class App {
         const aspectRatios = await Promise.all(
           Array.from({ length: pdfDoc.numPages }, (_, index) =>
             pdfDoc.getPage(index + 1).then(page => {
-              const viewport = page.getViewport({ scale: 1 });
-              return viewport.width / viewport.height;
+              try {
+                const viewport = page.getViewport({ scale: 1 });
+                return viewport.width / viewport.height;
+              } finally {
+                page.cleanup?.();
+              }
             })
           )
         );
+        pdfDoc.cleanup?.();
         aspectRatios.forEach((aspectRatio, index) => {
           this.book.addPage(new Page({
             source: { type: "pdf", pdfDoc, pageNum: index + 1 },

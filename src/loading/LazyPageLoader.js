@@ -102,6 +102,10 @@ export class LazyPageLoader {
         const previewCanvas = await downscaleCanvasToMaxEdge(previewSource, this.pdfPreviewMaxEdge);
         page.previewCanvas = previewCanvas;
         if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewCanvas;
+        if (previewSource !== previewCanvas) {
+          previewSource.width = 0;
+          previewSource.height = 0;
+        }
         this.onPageReady?.(pageIndex);
       } catch (error) {
         console.error(`Failed to render PDF preview ${page.source?.pageNum}:`, error);
