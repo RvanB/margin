@@ -1,7 +1,7 @@
 import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
-import { renderPdfPage } from "./pdfLoader.js";
+import { renderPdfPage, requestPdfDocumentCleanup } from "./pdfLoader.js";
 
 export class LazyPageLoader {
   constructor(book, onPageReady, { pdfRenderScale = 1.5, pdfPreviewSourceScale = 0.25, pdfPreviewMaxEdge = 96 } = {}) {
@@ -104,6 +104,7 @@ export class LazyPageLoader {
             autoCrop(applyEffectsToCanvas(previewSource, page.effects), page.tolerance)
           );
           page.cropInitialized = true;
+          page.cropDirty = true;
         }
         const previewCanvas = await downscaleCanvasToMaxEdge(previewSource, this.pdfPreviewMaxEdge);
         page.previewCanvas = previewCanvas;
@@ -159,6 +160,7 @@ export class LazyPageLoader {
         page.cropInitialized = true;
       }
       this.onPageReady?.(pageIndex);
+      this.#requestSpreadCleanupIfReady(pageIndex, requestedScale);
       if ((page.requestedPdfRenderScale || renderScale) > renderScale + 1e-3) {
         setTimeout(() => this.#ensurePageLoaded(pageIndex, page.requestedPdfRenderScale), 0);
       }
@@ -166,6 +168,25 @@ export class LazyPageLoader {
       page.loading = false;
       console.error(`Failed to render PDF page ${page.source?.pageNum}:`, error);
     }
+  }
+
+  #requestSpreadCleanupIfReady(pageIndex, targetPdfRenderScale) {
+    const spreadIndex = Math.floor((pageIndex + 1) / 2);
+    if (spreadIndex !== this.lastEnsuredSpread) return;
+    const { left, right } = this.book.spreadPageEntries(spreadIndex);
+    const pages = [left.pageIndex, right.pageIndex]
+      .filter(index => index >= 0)
+      .map(index => this.book.pages[index])
+      .filter(page => page?.source?.type === "pdf");
+    if (!pages.length) return;
+    const spreadReady = pages.every(page =>
+      !!page.srcCanvas &&
+      !page.loading &&
+      (page.loadedPdfRenderScale || 0) >= targetPdfRenderScale
+    );
+    if (!spreadReady) return;
+    const docs = new Set(pages.map(page => page.source?.pdfDoc).filter(Boolean));
+    docs.forEach(pdfDoc => requestPdfDocumentCleanup(pdfDoc));
   }
 
   #unloadPage(pageIndex) {

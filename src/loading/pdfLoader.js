@@ -3,6 +3,15 @@ function get2dContext(canvas, options) {
 }
 
 let pdfjsReady = null;
+const pdfDocActiveOps = new WeakMap();
+const pdfDocCleanupPending = new WeakSet();
+
+function maybeCleanupPdfDocument(pdfDoc) {
+  if (!pdfDocCleanupPending.has(pdfDoc)) return;
+  if ((pdfDocActiveOps.get(pdfDoc) || 0) > 0) return;
+  pdfDocCleanupPending.delete(pdfDoc);
+  pdfDoc.cleanup?.();
+}
 
 export function ensurePdfjs() {
   if (pdfjsReady) return pdfjsReady;
@@ -45,13 +54,26 @@ export async function loadPdfDocument(buffer) {
 }
 
 async function withPdfPage(pdfDoc, pageNum, work) {
+  pdfDocActiveOps.set(pdfDoc, (pdfDocActiveOps.get(pdfDoc) || 0) + 1);
   const page = await pdfDoc.getPage(pageNum);
   try {
     return await work(page);
   } finally {
     page.cleanup?.();
-    pdfDoc.cleanup?.();
+    const remainingOps = Math.max(0, (pdfDocActiveOps.get(pdfDoc) || 1) - 1);
+    if (remainingOps === 0) {
+      pdfDocActiveOps.delete(pdfDoc);
+    } else {
+      pdfDocActiveOps.set(pdfDoc, remainingOps);
+    }
+    maybeCleanupPdfDocument(pdfDoc);
   }
+}
+
+export function requestPdfDocumentCleanup(pdfDoc) {
+  if (!pdfDoc) return;
+  pdfDocCleanupPending.add(pdfDoc);
+  maybeCleanupPdfDocument(pdfDoc);
 }
 
 export async function getPdfPageAspectRatio(pdfDoc, pageNum) {

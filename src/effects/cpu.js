@@ -77,13 +77,19 @@ function getHue(r, g, b) {
 }
 
 export function getSelectionGate(selection = {}, legacyThreshold = null) {
+  const satLow = Number(selection.selectionSatLow);
+  const satHigh = Number(selection.selectionSatHigh);
+  const hueLow = Number(selection.selectionHueLow);
+  const hueHigh = Number(selection.selectionHueHigh);
+  const legacy = Number(legacyThreshold);
+
   return {
-    satLow: Number.isFinite(selection.selectionSatLow) ? selection.selectionSatLow : 0,
-    satHigh: Number.isFinite(selection.selectionSatHigh)
-      ? selection.selectionSatHigh
-      : (Number.isFinite(legacyThreshold) ? legacyThreshold : 100),
-    hueLow: Number.isFinite(selection.selectionHueLow) ? selection.selectionHueLow : 0,
-    hueHigh: Number.isFinite(selection.selectionHueHigh) ? selection.selectionHueHigh : 360,
+    satLow: Number.isFinite(satLow) ? satLow : 0,
+    satHigh: Number.isFinite(satHigh)
+      ? satHigh
+      : (Number.isFinite(legacy) ? legacy : 100),
+    hueLow: Number.isFinite(hueLow) ? hueLow : 0,
+    hueHigh: Number.isFinite(hueHigh) ? hueHigh : 360,
   };
 }
 

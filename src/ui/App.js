@@ -74,6 +74,7 @@ function buildMeasuredColor(hex) {
   };
 }
 
+
 export class App {
   constructor(spreadCanvas, overlayCanvas, stripContainer, { rendererClass = SpreadRenderer } = {}) {
     this.spreadCanvas = spreadCanvas;
@@ -158,6 +159,10 @@ export class App {
       el.removeEventListener(type, fn);
     }
     this.listeners = [];
+  }
+
+  getToolbarControl(id) {
+    return this.toolbar?.querySelector(`#${id}`) || document.getElementById(id);
   }
 
   getSelectedPages() {
@@ -457,36 +462,44 @@ export class App {
 
     const applySelectionFromUI = () => {
       const selection = this.readSelectionUI();
-      const page = this.getEditingPage();
-      this.applySelectionToPage(page, selection);
+      const editingPage = this.getEditingPage();
+      const pages = this.getSelectedPages();
+      const touchedPages = [];
+      if (editingPage) {
+        this.applySelectionToPage(editingPage, selection);
+        this.recomputeTrimFromEffects(editingPage);
+        touchedPages.push(editingPage);
+      }
+      for (const page of pages) {
+        if (!page || page === editingPage) continue;
+        this.applySelectionToPage(page, selection);
+        this.recomputeTrimFromEffects(page);
+        touchedPages.push(page);
+      }
+      this.refreshAffectedThumbnails(touchedPages);
       this.redraw();
     };
 
-    ["selection-sat-low", "selection-sat-high", "selection-hue-low", "selection-hue-high"].forEach(id => {
-      [id, `${id}-num`].forEach(controlId => {
-        this.addListener(controlId, "input", event => {
-          if (event.target.value === "" || Number.isNaN(Number(event.target.value))) return;
-          this.setSelectionControlUI(id, event.target.value);
-          applySelectionFromUI();
-        });
-        this.addListener(controlId, "change", event => {
-          if (event.target.value === "" || Number.isNaN(Number(event.target.value))) {
-            this.setSelectionUI(getSelectionGate(this.getEditingPage()?.effects));
-            return;
-          }
-          this.setSelectionControlUI(id, event.target.value);
-          const selection = this.readSelectionUI();
-          this.setSelectionUI(selection);
-          const pages = this.getSelectedPages();
-          for (const page of pages) {
-            this.applySelectionToPage(page, selection);
-            this.recomputeTrimFromEffects(page);
-          }
-          this.refreshAffectedThumbnails(pages);
-          this.redraw();
-        });
-      });
-    });
+    const selectionControlIds = new Set([
+      "selection-sat-low",
+      "selection-sat-high",
+      "selection-hue-low",
+      "selection-hue-high",
+    ]);
+    const handleSelectionControlEvent = event => {
+      const control = event.target;
+      if (!control?.id) return;
+      const baseId = control.id.endsWith("-num") ? control.id.slice(0, -4) : control.id;
+      if (!selectionControlIds.has(baseId)) return;
+      if (control.value === "" || Number.isNaN(Number(control.value))) {
+        if (event.type === "change") this.setSelectionUI(this.getEditingPage()?.effects);
+        return;
+      }
+      this.setSelectionControlUI(baseId, control.value);
+      applySelectionFromUI();
+    };
+    this.addListener(this.toolbar, "input", handleSelectionControlEvent);
+    this.addListener(this.toolbar, "change", handleSelectionControlEvent);
 
     this.addListener("bw-enabled", "change", event => {
       const enabled = !!event.target.checked;
@@ -511,8 +524,13 @@ export class App {
     });
 
     this.addListener("neutralize-color", "input", () => {
-      const page = this.getEditingPage();
-      this.applyNeutralizeColorToPage(page, document.getElementById("neutralize-color").value);
+      const color = document.getElementById("neutralize-color").value;
+      const pages = this.getSelectedPages();
+      for (const page of pages) {
+        this.applyNeutralizeColorToPage(page, color);
+        this.recomputeTrimFromEffects(page);
+      }
+      this.refreshAffectedThumbnails(pages);
       this.redraw();
     });
 
@@ -543,27 +561,18 @@ export class App {
 
       const levels = normalizeLevels(black, gray, white);
       this.setLevelsUI(levels);
-      const page = this.getEditingPage();
-      this.applyLevelsToPage(page, levels);
+      const pages = this.getSelectedPages();
+      for (const page of pages) {
+        this.applyLevelsToPage(page, levels);
+        this.recomputeTrimFromEffects(page);
+      }
+      this.refreshAffectedThumbnails(pages);
       this.redraw();
     };
 
     ["levels-black", "levels-gray", "levels-white"].forEach(id => {
       this.addListener(id, "input", () => applyLevelsFromUI(id));
-      this.addListener(id, "change", () => {
-        const levels = normalizeLevels(
-          parseInt(document.getElementById("levels-black").value, 10),
-          parseInt(document.getElementById("levels-gray").value, 10),
-          parseInt(document.getElementById("levels-white").value, 10)
-        );
-        const pages = this.getSelectedPages();
-        for (const page of pages) {
-          this.applyLevelsToPage(page, levels);
-          this.recomputeTrimFromEffects(page);
-        }
-        this.refreshAffectedThumbnails(pages);
-        this.redraw();
-      });
+      this.addListener(id, "change", () => applyLevelsFromUI(id));
     });
 
     this.addListener("cover-check", "change", event => {
@@ -577,6 +586,7 @@ export class App {
       const fitAxis = normalizeFitAxis(event.target.value);
       for (const page of this.getSelectedPages()) page.fitAxis = fitAxis;
       this.refreshAffectedThumbnails(this.getSelectedPages());
+      this.syncPageUI();
       this.redraw();
     });
 
@@ -637,13 +647,13 @@ export class App {
   }
 
   syncPageUI() {
-    const section = document.getElementById("trim-section");
+    const section = this.getToolbarControl("trim-section");
     if (section) section.style.display = "";
     const page = this.getEditingPage();
     if (!page) return;
 
     this.setTrimUI(page.tolerance);
-    this.setSelectionUI(getSelectionGate(page.effects, page.effects.bwThreshold));
+    this.setSelectionUI(page.effects);
     this.setBwUI(page.effects);
     this.setNeutralizeUI(page.effects.neutralizeColor);
     this.setLevelsUI({
@@ -651,15 +661,30 @@ export class App {
       gray: page.effects.levelsGray,
       white: page.effects.levelsWhite,
     });
+    console.log("Selected page selection sync", {
+      pageIndex: this.uiState.editingPageIdx,
+      saved: {
+        saturationLow: page.effects.selectionSatLow,
+        saturationHigh: page.effects.selectionSatHigh,
+        hueLow: page.effects.selectionHueLow,
+        hueHigh: page.effects.selectionHueHigh,
+      },
+      ui: {
+        saturationLow: this.getToolbarControl("selection-sat-low")?.value,
+        saturationHigh: this.getToolbarControl("selection-sat-high")?.value,
+        hueLow: this.getToolbarControl("selection-hue-low")?.value,
+        hueHigh: this.getToolbarControl("selection-hue-high")?.value,
+      },
+    });
 
-    const cover = document.getElementById("cover-check");
+    const cover = this.getToolbarControl("cover-check");
     if (cover) cover.checked = page.cover;
-    const fitAxis = document.getElementById("fit-axis");
+    const fitAxis = this.getToolbarControl("fit-axis");
     if (fitAxis) {
       fitAxis.value = normalizeFitAxis(page.fitAxis);
       fitAxis.disabled = !!page.cover;
     }
-    const selectionCount = document.getElementById("selection-count");
+    const selectionCount = this.getToolbarControl("selection-count");
     if (selectionCount) {
       const count = this.uiState.selectedPageIdxs.size;
       selectionCount.textContent = count > 1 ? `${count} pages` : "";
@@ -668,19 +693,18 @@ export class App {
   }
 
   setTrimUI(tolerance) {
-    const slider = document.getElementById("trim-slider");
-    const value = document.getElementById("trim-val");
+    const slider = this.getToolbarControl("trim-slider");
+    const value = this.getToolbarControl("trim-val");
     if (slider) slider.value = tolerance;
     if (value) value.textContent = tolerance;
   }
 
   setSelectionUI(selection = {}) {
-    const gate = getSelectionGate(selection, selection?.bwThreshold);
     const mappings = [
-      ["selection-sat-low", gate.satLow],
-      ["selection-sat-high", gate.satHigh],
-      ["selection-hue-low", gate.hueLow],
-      ["selection-hue-high", gate.hueHigh],
+      ["selection-sat-low", selection.selectionSatLow],
+      ["selection-sat-high", selection.selectionSatHigh],
+      ["selection-hue-low", selection.selectionHueLow],
+      ["selection-hue-high", selection.selectionHueHigh],
     ];
     mappings.forEach(([id, value]) => {
       this.setSelectionControlUI(id, value);
@@ -689,8 +713,14 @@ export class App {
 
   setSelectionControlUI(id, value) {
     [id, `${id}-num`].forEach(controlId => {
-      const el = document.getElementById(controlId);
-      if (el) el.value = value;
+      const el = this.getToolbarControl(controlId);
+      if (!el) return;
+      const numericValue = Number(value);
+      if ("valueAsNumber" in el && Number.isFinite(numericValue)) {
+        el.valueAsNumber = numericValue;
+      } else {
+        el.value = String(value);
+      }
     });
   }
 
@@ -713,16 +743,22 @@ export class App {
   }
 
   readSelectionUI() {
+    const readNumericControl = id => {
+      const el = this.getToolbarControl(id);
+      if (!el) return NaN;
+      if ("valueAsNumber" in el && Number.isFinite(el.valueAsNumber)) return el.valueAsNumber;
+      return parseFloat(el.value);
+    };
     return {
-      selectionSatLow: parseFloat(document.getElementById("selection-sat-low")?.value),
-      selectionSatHigh: parseFloat(document.getElementById("selection-sat-high")?.value),
-      selectionHueLow: parseFloat(document.getElementById("selection-hue-low")?.value),
-      selectionHueHigh: parseFloat(document.getElementById("selection-hue-high")?.value),
+      selectionSatLow: readNumericControl("selection-sat-low"),
+      selectionSatHigh: readNumericControl("selection-sat-high"),
+      selectionHueLow: readNumericControl("selection-hue-low"),
+      selectionHueHigh: readNumericControl("selection-hue-high"),
     };
   }
 
   setBwUI(effects = {}) {
-    const checkbox = document.getElementById("bw-enabled");
+    const checkbox = this.getToolbarControl("bw-enabled");
     if (checkbox) {
       checkbox.checked = typeof effects.bwEnabled === "boolean"
         ? effects.bwEnabled
@@ -732,8 +768,8 @@ export class App {
 
   setNeutralizeUI(color) {
     const normalized = normalizeHexColor(color);
-    const colorInput = document.getElementById("neutralize-color");
-    const value = document.getElementById("neutralize-val");
+    const colorInput = this.getToolbarControl("neutralize-color");
+    const value = this.getToolbarControl("neutralize-val");
     if (colorInput) colorInput.value = normalized || "#ffffff";
     if (value) value.textContent = normalized || "none";
   }
@@ -749,7 +785,7 @@ export class App {
       ["levels-white-val", levels.white],
     ];
     mappings.forEach(([id, value]) => {
-      const el = document.getElementById(id);
+      const el = this.getToolbarControl(id);
       if (!el) return;
       if ("value" in el) el.value = value;
       else el.textContent = String(value);
@@ -758,7 +794,7 @@ export class App {
 
   applyTrimToPage(page) {
     if (!page) return;
-    const tolerance = parseInt(document.getElementById("trim-slider")?.value, 10);
+    const tolerance = parseInt(this.getToolbarControl("trim-slider")?.value, 10);
     page.tolerance = tolerance;
     this.recomputeTrimFromEffects(page, tolerance);
     this.refreshPlacedPreview(page);
@@ -767,7 +803,7 @@ export class App {
 
   recomputeTrimFromEffects(page, tolerance = page?.tolerance) {
     if (!page) return;
-    const sourceCanvas = page.displayCanvas;
+    const sourceCanvas = page.srcCanvas || page.previewCanvas || null;
     if (sourceCanvas) {
       page.setCropFor(sourceCanvas, autoCrop(
         applyEffectsToCanvas(
@@ -779,6 +815,7 @@ export class App {
         tolerance
       ));
       page.cropInitialized = true;
+      page.cropDirty = !page.srcCanvas;
     } else {
       page.cropInitialized = false;
       page.cropDirty = true;
@@ -787,11 +824,10 @@ export class App {
 
   applySelectionToPage(page, selection) {
     if (!page) return;
-    const gate = getSelectionGate(selection, page.effects.bwThreshold);
-    page.effects.selectionSatLow = gate.satLow;
-    page.effects.selectionSatHigh = gate.satHigh;
-    page.effects.selectionHueLow = gate.hueLow;
-    page.effects.selectionHueHigh = gate.hueHigh;
+    page.effects.selectionSatLow = selection.selectionSatLow;
+    page.effects.selectionSatHigh = selection.selectionSatHigh;
+    page.effects.selectionHueLow = selection.selectionHueLow;
+    page.effects.selectionHueHigh = selection.selectionHueHigh;
     this.refreshPlacedPreview(page);
   }
 
