@@ -12,6 +12,7 @@ export class LazyPageLoader {
     this.pdfPreviewMaxEdge = pdfPreviewMaxEdge;
     this.lastEnsuredSpread = -1;
     this.lastEnsuredPreviewZoom = 1;
+    this.keepPageIndexes = new Set();
     this.previewQueue = [];
     this.previewQueued = new Set();
     this.previewRendering = false;
@@ -24,9 +25,18 @@ export class LazyPageLoader {
   reset() {
     this.lastEnsuredSpread = -1;
     this.lastEnsuredPreviewZoom = 1;
+    this.keepPageIndexes = new Set();
     this.previewQueue = [];
     this.previewQueued.clear();
     this.previewRendering = false;
+  }
+
+  #buildKeepSet(spreadIndex) {
+    const keep = new Set();
+    const { left, right } = this.book.spreadPageEntries(spreadIndex);
+    if (left.pageIndex >= 0) keep.add(left.pageIndex);
+    if (right.pageIndex >= 0) keep.add(right.pageIndex);
+    return keep;
   }
 
   ensureSpreadLoaded(spreadIndex, previewZoom = 1, { allowHighRes = true } = {}) {
@@ -36,6 +46,8 @@ export class LazyPageLoader {
       * this.lastEnsuredPreviewZoom
       * this.#getHighResPixelRatio();
     const spreadCount = this.book.numSpreads();
+    const keep = this.#buildKeepSet(spreadIndex);
+    this.keepPageIndexes = keep;
     for (
       let spread = Math.max(0, spreadIndex - 1);
       spread <= Math.min(spreadCount - 1, spreadIndex + 1);
@@ -44,24 +56,16 @@ export class LazyPageLoader {
       const { left, right } = this.book.spreadPageEntries(spread);
       if (left.pageIndex >= 0) {
         this.#ensurePreviewLoaded(left.pageIndex, spread === spreadIndex);
-        if (allowHighRes) this.#ensurePageLoaded(left.pageIndex, targetPdfRenderScale);
+        if (allowHighRes && spread === spreadIndex) {
+          this.#ensurePageLoaded(left.pageIndex, targetPdfRenderScale);
+        }
       }
       if (right.pageIndex >= 0 && right.pageIndex < this.book.pages.length) {
         this.#ensurePreviewLoaded(right.pageIndex, spread === spreadIndex);
-        if (allowHighRes) this.#ensurePageLoaded(right.pageIndex, targetPdfRenderScale);
+        if (allowHighRes && spread === spreadIndex) {
+          this.#ensurePageLoaded(right.pageIndex, targetPdfRenderScale);
+        }
       }
-    }
-
-    const keep = new Set();
-    const keepWindow = 3;
-    for (
-      let spread = Math.max(0, spreadIndex - keepWindow);
-      spread <= Math.min(spreadCount - 1, spreadIndex + keepWindow);
-      spread += 1
-    ) {
-      const { left, right } = this.book.spreadPageEntries(spread);
-      if (left.pageIndex >= 0) keep.add(left.pageIndex);
-      if (right.pageIndex >= 0) keep.add(right.pageIndex);
     }
 
     this.book.pages.forEach((_, pageIndex) => {
@@ -127,7 +131,7 @@ export class LazyPageLoader {
     const requestedScale = Math.max(
       minimumHighResScale,
       targetPdfRenderScale || minimumHighResScale
-    ) * 2;
+    ) * 1.5;
     if (!page || page.source?.type !== "pdf") return;
     page.requestedPdfRenderScale = Math.max(page.requestedPdfRenderScale || 0, requestedScale);
     if (page.loading) return;
@@ -139,11 +143,18 @@ export class LazyPageLoader {
         minimumHighResScale,
         page.requestedPdfRenderScale || requestedScale
       );
-      const prevCanvas = page.srcCanvas;
-      const prevSource = prevCanvas || page.previewCanvas;
-      const prevWidth = prevSource?.width || 0;
-      const prevHeight = prevSource?.height || 0;
       const canvas = await renderPdfPage(page.source.pdfDoc, page.source.pageNum, renderScale);
+      if (!this.keepPageIndexes.has(pageIndex)) {
+        page.loading = false;
+        canvas.width = 0;
+        canvas.height = 0;
+        requestPdfDocumentCleanup(page.source.pdfDoc);
+        return;
+      }
+      if (page.srcCanvas && page.srcCanvas !== canvas) {
+        page.srcCanvas.width = 0;
+        page.srcCanvas.height = 0;
+      }
       page.srcCanvas = canvas;
       if (!page.previewCanvas) {
         const previewCanvas = await downscaleCanvasToMaxEdge(canvas, this.pdfPreviewMaxEdge);
@@ -192,6 +203,8 @@ export class LazyPageLoader {
   #unloadPage(pageIndex) {
     const page = this.book.pages[pageIndex];
     if (!page || !page.srcCanvas || page.source?.type !== "pdf") return;
+    page.srcCanvas.width = 0;
+    page.srcCanvas.height = 0;
     page.srcCanvas = null;
     page.loadedPdfRenderScale = 0;
     page.requestedPdfRenderScale = 0;
