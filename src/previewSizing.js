@@ -1,0 +1,2 @@
+export const SHARED_PREVIEW_SIZE = 96;
+export const PAGE_STRIP_DISPLAY_HEIGHT = 48;
