@@ -6,6 +6,7 @@ const MAX_SHADOW_OCCLUDERS = 8;
 const TURN_EASING_POWER = 3;
 const TURN_DURATION_MS = 750;
 const BASE_PAGE_SURFACE_SCALE = 2;
+const MAX_PAGE_SURFACE_EDGE = 8192;
 
 function get2dContext(canvas, options) {
   return canvas.getContext("2d", options);
@@ -184,7 +185,9 @@ function getPageSurfaceScale(pageRect, measurement, previewZoom = 1) {
     : BASE_PAGE_SURFACE_SCALE;
   const maxSourceScale = Math.max(1, Math.min(sourceWidthRatio, sourceHeightRatio));
   const zoomScale = BASE_PAGE_SURFACE_SCALE * Math.max(1, previewZoom || 1);
-  return Math.max(1, Math.min(maxSourceScale, zoomScale));
+  const maxDimension = Math.max(1, Math.round(pageRect.w), Math.round(pageRect.h));
+  const maxEdgeScale = MAX_PAGE_SURFACE_EDGE / maxDimension;
+  return Math.max(1, Math.min(maxSourceScale, zoomScale, maxEdgeScale));
 }
 
 function buildQuadVertices({
@@ -1285,6 +1288,12 @@ export class WebGPUSpreadRenderer {
 
     const measurement = measurePageDraw(sideState.page, sideState.contentRect, sideState.contentMode);
     const surfaceScale = getPageSurfaceScale(sideState.pageRect, measurement, scene.previewZoom);
+    const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
+    const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
+    const clampedSurfaceScale = Math.min(
+      surfaceScale,
+      MAX_PAGE_SURFACE_EDGE / Math.max(pageWidth, pageHeight)
+    );
     const surfaceCrop = sideState.page.getCropFor(sideState.page.displayCanvas);
     const drawKey = measurement
       ? [
@@ -1299,7 +1308,7 @@ export class WebGPUSpreadRenderer {
         Math.round(sideState.contentRect.w),
           Math.round(sideState.contentRect.h),
           sideState.contentMode,
-          Math.round(surfaceScale * 1000),
+          Math.round(clampedSurfaceScale * 1000),
         ].join("|")
       : null;
 
@@ -1316,13 +1325,11 @@ export class WebGPUSpreadRenderer {
     const cached = drawKey ? pageCache.variants.get(drawKey) : null;
     if (cached) return cached;
 
-    const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
-    const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
     const surface = document.createElement("canvas");
-    surface.width = Math.max(1, Math.round(pageWidth * surfaceScale));
-    surface.height = Math.max(1, Math.round(pageHeight * surfaceScale));
+    surface.width = Math.max(1, Math.min(MAX_PAGE_SURFACE_EDGE, Math.round(pageWidth * clampedSurfaceScale)));
+    surface.height = Math.max(1, Math.min(MAX_PAGE_SURFACE_EDGE, Math.round(pageHeight * clampedSurfaceScale)));
     const ctx = setHighQualitySampling(get2dContext(surface, { willReadFrequently: true }));
-    ctx.scale(surfaceScale, surfaceScale);
+    ctx.scale(clampedSurfaceScale, clampedSurfaceScale);
 
     if (measurement) {
       const sourceCanvas = sideState.page.displayCanvas;

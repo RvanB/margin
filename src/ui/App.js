@@ -976,16 +976,26 @@ export class App {
     return snapshot;
   }
 
+  getCanvasViewportSize() {
+    const rect = this.canvasArea.getBoundingClientRect();
+    return {
+      width: Math.max(1, rect.width),
+      height: Math.max(1, rect.height),
+    };
+  }
+
   getRenderScale() {
-    const containerWidth = Math.max(1, this.canvasArea.clientWidth - 64);
-    const containerHeight = Math.max(1, this.canvasArea.clientHeight - 64);
+    const viewport = this.getCanvasViewportSize();
+    const containerWidth = Math.max(1, viewport.width - 64);
+    const containerHeight = Math.max(1, viewport.height - 64);
     const baseScale = computeScale(this.book.layout, containerWidth, containerHeight);
     return baseScale * this.renderZoom;
   }
 
   getSafeRenderZoom(targetZoom = this.contentZoom) {
-    const containerWidth = Math.max(1, this.canvasArea.clientWidth - 64);
-    const containerHeight = Math.max(1, this.canvasArea.clientHeight - 64);
+    const viewport = this.getCanvasViewportSize();
+    const containerWidth = Math.max(1, viewport.width - 64);
+    const containerHeight = Math.max(1, viewport.height - 64);
     const baseScale = computeScale(this.book.layout, containerWidth, containerHeight);
     const baseMargins = computeMargins(this.book.layout, baseScale);
     const maxWidthZoom = (2 * baseMargins.pagePxW) > 0
@@ -1027,6 +1037,23 @@ export class App {
     const zoomRatio = nextZoom / this.contentZoom;
 
     this.contentZoom = nextZoom;
+    this.syncCanvasStage();
+    requestAnimationFrame(() => {
+      this.canvasArea.scrollLeft = Math.max(0, centerX * zoomRatio - viewportWidth / 2);
+      this.canvasArea.scrollTop = Math.max(0, centerY * zoomRatio - viewportHeight / 2);
+    });
+    this.schedulePreviewRedraw();
+  }
+
+  resetContentZoom() {
+    if (Math.abs(this.contentZoom - 1) < 0.0001) return;
+    const viewportWidth = this.canvasArea.clientWidth;
+    const viewportHeight = this.canvasArea.clientHeight;
+    const centerX = this.canvasArea.scrollLeft + viewportWidth / 2;
+    const centerY = this.canvasArea.scrollTop + viewportHeight / 2;
+    const zoomRatio = 1 / this.contentZoom;
+
+    this.contentZoom = 1;
     this.syncCanvasStage();
     requestAnimationFrame(() => {
       this.canvasArea.scrollLeft = Math.max(0, centerX * zoomRatio - viewportWidth / 2);
@@ -1239,6 +1266,12 @@ export class App {
         event.preventDefault();
         event.stopPropagation();
         this.adjustContentZoom(-1);
+        return;
+      }
+      if (key === "0") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.resetContentZoom();
         return;
       }
     }
