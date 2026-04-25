@@ -5,7 +5,7 @@ import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } 
 import { downscaleCanvasToMaxEdge } from "../loading/downscaleCanvas.js";
 import { loadImageFile } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
-import { loadPdfDocument } from "../loading/pdfLoader.js";
+import { getPdfPageAspectRatio, loadPdfDocument } from "../loading/pdfLoader.js";
 import { computeMargins, computeScale } from "../rendering/layout.js";
 import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
 import { renderOverlay } from "../rendering/OverlayRenderer.js";
@@ -1135,17 +1135,9 @@ export class App {
         const pdfDoc = await loadPdfDocument(await file.arrayBuffer());
         const aspectRatios = await Promise.all(
           Array.from({ length: pdfDoc.numPages }, (_, index) =>
-            pdfDoc.getPage(index + 1).then(page => {
-              try {
-                const viewport = page.getViewport({ scale: 1 });
-                return viewport.width / viewport.height;
-              } finally {
-                page.cleanup?.();
-              }
-            })
+            getPdfPageAspectRatio(pdfDoc, index + 1)
           )
         );
-        pdfDoc.cleanup?.();
         aspectRatios.forEach((aspectRatio, index) => {
           this.book.addPage(new Page({
             source: { type: "pdf", pdfDoc, pageNum: index + 1 },

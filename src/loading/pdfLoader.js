@@ -44,9 +44,25 @@ export async function loadPdfDocument(buffer) {
   return lib.getDocument({ data: buffer }).promise;
 }
 
-export async function renderPdfPage(pdfDoc, pageNum, scale) {
+async function withPdfPage(pdfDoc, pageNum, work) {
   const page = await pdfDoc.getPage(pageNum);
   try {
+    return await work(page);
+  } finally {
+    page.cleanup?.();
+    pdfDoc.cleanup?.();
+  }
+}
+
+export async function getPdfPageAspectRatio(pdfDoc, pageNum) {
+  return withPdfPage(pdfDoc, pageNum, page => {
+    const viewport = page.getViewport({ scale: 1 });
+    return viewport.width / viewport.height;
+  });
+}
+
+export async function renderPdfPage(pdfDoc, pageNum, scale) {
+  return withPdfPage(pdfDoc, pageNum, async page => {
     const viewport = page.getViewport({ scale });
     const canvas = document.createElement("canvas");
     canvas.width = viewport.width;
@@ -64,8 +80,5 @@ export async function renderPdfPage(pdfDoc, pageNum, scale) {
     };
     await renderTask.promise;
     return canvas;
-  } finally {
-    page.cleanup?.();
-    pdfDoc.cleanup?.();
-  }
+  });
 }
