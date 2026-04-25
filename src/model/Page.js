@@ -35,7 +35,8 @@ export class Page {
     cropSourceWidth = 0,
     cropSourceHeight = 0,
     cropInitialized = false,
-    tolerance = 128,
+    cropDirty = false,
+    tolerance = 1,
     cover = false,
     fitAxis = "inside",
     effects = null,
@@ -51,6 +52,7 @@ export class Page {
     this.cropSourceWidth = cropSourceWidth;
     this.cropSourceHeight = cropSourceHeight;
     this.cropInitialized = cropInitialized;
+    this.cropDirty = cropDirty;
     this.tolerance = tolerance;
     this.cover = cover;
     this.fitAxis = normalizeFitAxis(fitAxis);
@@ -86,5 +88,6 @@ export class Page {
     this.crop = { ...makeDefaultCrop(), ...crop };
     this.cropSourceWidth = sourceCanvas?.width || 0;
     this.cropSourceHeight = sourceCanvas?.height || 0;
+    this.cropDirty = false;
   }
 }

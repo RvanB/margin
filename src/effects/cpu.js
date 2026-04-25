@@ -217,7 +217,7 @@ export function neutralizeEffect(hexColor) {
   };
 }
 
-export function autoCrop(srcCanvas, tolerance = 128) {
+export function autoCrop(srcCanvas, tolerance = 1) {
   const w = srcCanvas.width;
   const h = srcCanvas.height;
   const data = get2dContext(srcCanvas, { willReadFrequently: true }).getImageData(0, 0, w, h).data;

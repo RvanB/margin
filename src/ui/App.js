@@ -781,6 +781,7 @@ export class App {
       page.cropInitialized = true;
     } else {
       page.cropInitialized = false;
+      page.cropDirty = true;
     }
   }
 
@@ -1156,11 +1157,11 @@ export class App {
         previewCanvas: thumbnailSourceCanvas,
         thumbnailSourceCanvas,
         aspectRatio: canvas.width / canvas.height,
-        crop: autoCrop(applyEffectsToCanvas(canvas, makeDefaultPageEffects()), 128),
+        crop: autoCrop(applyEffectsToCanvas(canvas, makeDefaultPageEffects()), 1),
         cropSourceWidth: canvas.width,
         cropSourceHeight: canvas.height,
         cropInitialized: true,
-        tolerance: 128,
+        tolerance: 1,
         effects: makeDefaultPageEffects(),
       }));
     }

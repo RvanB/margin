@@ -17,6 +17,10 @@ export class LazyPageLoader {
     this.previewRendering = false;
   }
 
+  #getHighResPixelRatio() {
+    return Math.max(1, globalThis.devicePixelRatio || 1);
+  }
+
   reset() {
     this.lastEnsuredSpread = -1;
     this.lastEnsuredPreviewZoom = 1;
@@ -28,7 +32,9 @@ export class LazyPageLoader {
   ensureSpreadLoaded(spreadIndex, previewZoom = 1, { allowHighRes = true } = {}) {
     this.lastEnsuredSpread = spreadIndex;
     this.lastEnsuredPreviewZoom = Math.max(1, previewZoom || 1);
-    const targetPdfRenderScale = this.pdfRenderScale * this.lastEnsuredPreviewZoom;
+    const targetPdfRenderScale = this.pdfRenderScale
+      * this.lastEnsuredPreviewZoom
+      * this.#getHighResPixelRatio();
     const spreadCount = this.book.numSpreads();
     for (
       let spread = Math.max(0, spreadIndex - 1);
@@ -92,7 +98,7 @@ export class LazyPageLoader {
           page.source.pageNum,
           this.pdfPreviewSourceScale
         );
-        if (!page.cropInitialized) {
+        if (!page.cropInitialized || page.cropDirty) {
           page.setCropFor(
             previewSource,
             autoCrop(applyEffectsToCanvas(previewSource, page.effects), page.tolerance)
@@ -116,7 +122,11 @@ export class LazyPageLoader {
 
   async #ensurePageLoaded(pageIndex, targetPdfRenderScale = this.pdfRenderScale) {
     const page = this.book.pages[pageIndex];
-    const requestedScale = Math.max(this.pdfRenderScale, targetPdfRenderScale || this.pdfRenderScale);
+    const minimumHighResScale = this.pdfRenderScale * this.#getHighResPixelRatio();
+    const requestedScale = Math.max(
+      minimumHighResScale,
+      targetPdfRenderScale || minimumHighResScale
+    );
     if (!page || page.source?.type !== "pdf") return;
     page.requestedPdfRenderScale = Math.max(page.requestedPdfRenderScale || 0, requestedScale);
     if (page.loading) return;
@@ -124,7 +134,10 @@ export class LazyPageLoader {
 
     page.loading = true;
     try {
-      const renderScale = Math.max(this.pdfRenderScale, page.requestedPdfRenderScale || requestedScale);
+      const renderScale = Math.max(
+        minimumHighResScale,
+        page.requestedPdfRenderScale || requestedScale
+      );
       const prevCanvas = page.srcCanvas;
       const prevSource = prevCanvas || page.previewCanvas;
       const prevWidth = prevSource?.width || 0;
@@ -141,7 +154,7 @@ export class LazyPageLoader {
       page.loadedPdfRenderScale = renderScale;
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
-      if (!page.cropInitialized) {
+      if (!page.cropInitialized || page.cropDirty) {
         page.setCropFor(canvas, autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance));
         page.cropInitialized = true;
       }
