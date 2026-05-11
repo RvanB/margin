@@ -582,6 +582,9 @@ export class WebGPUSpreadRenderer {
                 effectB: vec4<f32>,
                 effectC: vec4<f32>,
                 effectD: vec4<f32>,
+                lightShadowColor: vec4<f32>,
+                lightHighlightColor: vec4<f32>,
+                shadowTintColor: vec4<f32>,
                 occluders: array<vec4<f32>, 32>,
               };
 
@@ -640,6 +643,9 @@ export class WebGPUSpreadRenderer {
                 effectB: vec4<f32>,
                 effectC: vec4<f32>,
                 effectD: vec4<f32>,
+                lightShadowColor: vec4<f32>,
+                lightHighlightColor: vec4<f32>,
+                shadowTintColor: vec4<f32>,
                 occluders: array<vec4<f32>, 32>,
               };
 
@@ -805,7 +811,7 @@ export class WebGPUSpreadRenderer {
 
                   let hit = worldPos + ray * t;
                   if (pointInQuad(hit, p0.xyz, p1.xyz, p3.xyz)) {
-                    shadow = max(shadow, p0.w);
+                    shadow = 1.0 - (1.0 - shadow) * (1.0 - p0.w);
                   }
                 }
 
@@ -831,10 +837,18 @@ export class WebGPUSpreadRenderer {
                 let normal = normalize(input.worldNormal);
                 let lightDir = vec3<f32>(0.0, 0.0, -1.0);
                 let diffuse = abs(dot(normal, lightDir));
-                let shade = 0.82 + 0.18 * diffuse;
+                let lightTint = mix(
+                  uniforms.lightShadowColor.rgb,
+                  uniforms.lightHighlightColor.rgb,
+                  diffuse
+                );
                 let shadow = computeShadow(input.worldPos);
-                let shadowShade = mix(1.0, 0.6, shadow);
-                return vec4<f32>(composited * shade * shadowShade, 1.0);
+                let shadowTint = mix(
+                  vec3<f32>(1.0, 1.0, 1.0),
+                  uniforms.shadowTintColor.rgb,
+                  shadow
+                );
+                return vec4<f32>(composited * lightTint * shadowTint, 1.0);
               }
             `,
       });
@@ -1176,7 +1190,7 @@ export class WebGPUSpreadRenderer {
       const turningModel = createPageModelMatrix(turningRect, 0, angle, hingeLocalX);
       const corners = getPageWorldCorners(turningRect, turningModel);
       const flatness = Math.abs(Math.cos(angle));
-      const density = 0.04 + 0.28 * flatness * flatness * flatness;
+      const density = 0.05 + 0.3 * flatness * flatness * flatness;
       const id = occluders.length;
       animation.__shadowId = id;
       occluders.push({ corners, density, id });
@@ -1226,7 +1240,10 @@ export class WebGPUSpreadRenderer {
     const neutralize = parseHexColor(gpuEffects.neutralizeColor || "#ffffff");
     const neutralizeEnabled = gpuEffects.neutralizeColor ? 1 : 0;
     const paperColor = parseHexColor(scene.display.paperColor);
-    const uniformData = new Float32Array(180);
+    const lightShadowColor = parseHexColor(scene.display.lightShadowColor || scene.display.paperColor);
+    const lightHighlightColor = parseHexColor(scene.display.lightHighlightColor || "#ffffff");
+    const shadowTintColor = parseHexColor(scene.display.shadowTintColor || scene.display.paperColor);
+    const uniformData = new Float32Array(192);
     uniformData.set(modelMatrix, 0);
     uniformData.set([light.x, light.y, light.z, 1], 16);
     uniformData.set([this.canvas.width, this.canvas.height, -this.canvas.width, this.canvas.width], 20);
@@ -1247,7 +1264,10 @@ export class WebGPUSpreadRenderer {
       gpuEffects.bwEnabled ? 1 : 0,
     ], 44);
     uniformData.set([getBlendModeIndex(scene.display.contentBlendMode), 0, 0, 0], 48);
-    let offset = 52;
+    uniformData.set(lightShadowColor, 52);
+    uniformData.set(lightHighlightColor, 56);
+    uniformData.set(shadowTintColor, 60);
+    let offset = 64;
     for (let i = 0; i < MAX_SHADOW_OCCLUDERS; i += 1) {
       const occluder = occluders[i];
       for (let corner = 0; corner < 4; corner += 1) {

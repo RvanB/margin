@@ -1,5 +1,6 @@
 import { Book } from "../model/Book.js";
 import { Page, normalizeContentAlignX, normalizeContentAlignY, normalizeFitAxis } from "../model/Page.js";
+import { applyPaperPreset, getPaperPresetIdForColor, getPaperPresetOptions, normalizePaperPreset } from "../model/paper.js";
 import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { loadImageFile, loadImagePreview } from "../loading/imageLoader.js";
@@ -117,6 +118,7 @@ export class App {
   init() {
     this.canvasWrap.dataset.mode = "layout";
     this.mountToolbar("layout");
+    this.populatePaperPresetMenu();
     this.syncDarkMode();
     this.applyVdGLayoutValues();
     this.syncBookLayoutFromInputs();
@@ -132,8 +134,12 @@ export class App {
   buildProjectData() {
     if (this.uiState.appMode === "layout") this.syncBookLayoutFromInputs();
     return {
-      version: 3,
+      version: 4,
       layout: { ...this.book.layout },
+      display: {
+        paperPreset: this.book.display.paperPreset,
+        contentBlendMode: this.book.display.contentBlendMode,
+      },
       layoutControls: { ...this.layoutControlsState },
       pageCount: this.book.pages.length,
       pages: this.book.pages.map(page => ({
@@ -208,6 +214,9 @@ export class App {
       const control = document.getElementById(id);
       if (control) control.disabled = this.exportingPages;
     });
+    document.querySelectorAll(".paper-preset-item").forEach(button => {
+      button.disabled = this.exportingPages;
+    });
     document.querySelectorAll(".mode-menu-item").forEach(button => {
       button.disabled = this.exportingPages;
     });
@@ -219,10 +228,17 @@ export class App {
   }
 
   closeOpenMenus() {
-    document.querySelectorAll(".menu-dropdown[open]").forEach(menu => menu.removeAttribute("open"));
+    document.querySelectorAll(".menu-dropdown[open], .menu-submenu[open]").forEach(menu => menu.removeAttribute("open"));
   }
 
   syncMenuState() {
+    this.populatePaperPresetMenu();
+    const activePaperPreset = normalizePaperPreset(this.book.display.paperPreset);
+    document.querySelectorAll(".paper-preset-item").forEach(button => {
+      const isActive = button.dataset.paperPreset === activePaperPreset;
+      button.classList.toggle("active", isActive);
+      button.setAttribute("aria-pressed", isActive ? "true" : "false");
+    });
     const showMarginArrows = document.getElementById("show-margin-arrows");
     if (showMarginArrows) showMarginArrows.checked = this.uiState.showMarginArrows;
     const showLayoutContent = document.getElementById("show-layout-content");
@@ -237,6 +253,37 @@ export class App {
     document.querySelectorAll(".mode-menu-item").forEach(button => {
       button.classList.toggle("active", button.dataset.mode === this.uiState.appMode);
     });
+  }
+
+  populatePaperPresetMenu() {
+    const list = document.getElementById("paper-color-list");
+    if (!list || list.children.length) return;
+    getPaperPresetOptions().forEach(({ id, label }) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "menu-list-item paper-preset-item";
+      button.dataset.paperPreset = id;
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        this.setPaperPreset(id);
+        this.closeOpenMenus();
+      });
+      list.appendChild(button);
+    });
+  }
+
+  setPaperPreset(presetId) {
+    applyPaperPreset(this.book.display, presetId);
+    const nextPreviewLayoutKey = this.getPlacedPreviewLayoutKey();
+    if (nextPreviewLayoutKey !== this.previewLayoutKey) {
+      this.previewLayoutKey = nextPreviewLayoutKey;
+      this.refreshAllPlacedPreviews();
+    } else {
+      this.pageStrip.invalidateAllThumbnails();
+    }
+    this.syncMenuState();
+    this.redraw();
+    this.schedulePreviewRedraw();
   }
 
   getNativeExportScale(page, sourceCanvas, side) {
@@ -435,6 +482,18 @@ export class App {
         ? !!layoutControls.ratioSameAsPage
         : this.layoutControlsState.ratioSameAsPage,
     };
+    const display = project.display && typeof project.display === "object"
+      ? project.display
+      : {};
+    if (typeof display.contentBlendMode === "string" && display.contentBlendMode) {
+      this.book.display.contentBlendMode = display.contentBlendMode;
+    }
+    if ("paperPreset" in display || "paperColor" in display) {
+      const presetId = "paperPreset" in display
+        ? normalizePaperPreset(display.paperPreset)
+        : getPaperPresetIdForColor(display.paperColor);
+      applyPaperPreset(this.book.display, presetId);
+    }
 
     const pageStates = Array.isArray(project.pages) ? project.pages : [];
     const appliedPageCount = Math.min(this.book.pages.length, pageStates.length);
@@ -1398,11 +1457,15 @@ export class App {
       this.closeOpenMenus();
       this.redraw();
     });
-    document.querySelectorAll(".menu-dropdown").forEach(menu =>
+    document.querySelectorAll(".menu-dropdown, .menu-submenu").forEach(menu =>
       menu.addEventListener("toggle", () => {
         if (!menu.open) return;
-        document.querySelectorAll(".menu-dropdown[open]").forEach(otherMenu => {
-          if (otherMenu !== menu) otherMenu.removeAttribute("open");
+        const parent = menu.parentElement;
+        if (!parent) return;
+        Array.from(parent.children).forEach(sibling => {
+          if (sibling !== menu && sibling.matches?.(".menu-dropdown[open], .menu-submenu[open]")) {
+            sibling.removeAttribute("open");
+          }
         });
       })
     );

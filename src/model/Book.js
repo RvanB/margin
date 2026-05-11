@@ -1,3 +1,5 @@
+import { applyPaperPreset, getPaperPresetIdForColor } from "./paper.js";
+
 export class Book {
   constructor({
     pages = [],
@@ -15,11 +17,12 @@ export class Book {
       mBottom: 3.091,
       ...layout,
     };
+    const paperPreset = display?.paperPreset ?? getPaperPresetIdForColor(display?.paperColor);
     this.display = {
-      paperColor: "#ffffff",
-      contentBlendMode: "source-over",
+      contentBlendMode: "multiply",
       ...display,
     };
+    applyPaperPreset(this.display, paperPreset);
   }
 
   numSpreads() {
