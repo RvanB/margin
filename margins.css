@@ -1,15 +1,61 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+@media (prefers-color-scheme: dark) {
+  html {
+    filter: invert(100%) hue-rotate(180deg);
+  }
+}
+
 body {
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
-  font-size: 12px;
+  font-size: 10pt;
   background: #fff;
   color: #000;
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
   user-select: none;
   -webkit-user-select: none;
+}
+
+#top-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  border-bottom: 1px solid #000;
+}
+
+#top-bar-title {
+  width: 220px;
+  min-width: 220px;
+  padding: 12px 14px 10px;
+  border-right: 1px solid #000;
+  font-weight: normal;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+#top-bar-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 14px 8px;
+}
+
+#menu-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+}
+
+#app-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 
 #sidebar {
@@ -23,56 +69,87 @@ body {
   overflow-y: auto;
 }
 
-/* ── Sidebar header ─────────────────────────────────────────────────────────── */
-
-#sidebar-header {
-  border-bottom: 1px dotted #000;
-  padding-bottom: 0;
-  margin-bottom: 0;
-  flex-shrink: 0;
-}
-
-h1 {
-  font-size: 11px;
-  font-weight: normal;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  padding-bottom: 10px;
-}
-
-/* ── Mode tabs ──────────────────────────────────────────────────────────────── */
-
-#mode-tabs {
+.menu-dropdown {
+  position: relative;
   display: flex;
-  border-top: 1px dotted #000;
+  align-items: flex-start;
+  padding-bottom: 8px;
+  margin-bottom: -8px;
 }
 
-#project-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px 0 12px;
-  border-top: 1px dotted #000;
+.menu-dropdown summary {
+  list-style: none;
+  font-variant-caps: all-small-caps;
+  letter-spacing: 0.08em;
+  text-transform: none;
+  padding: 2px 0;
+  cursor: pointer;
+  user-select: none;
 }
 
-#project-controls button {
-  flex: 1 1 calc(50% - 3px);
-  min-width: 0;
-  padding: 5px 6px;
-  font-family: inherit;
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  background: none;
+.menu-dropdown summary::-webkit-details-marker {
+  display: none;
+}
+
+.menu-dropdown[open] summary {
+  text-decoration: underline;
+}
+
+.menu-dropdown summary:hover {
+  text-decoration: underline;
+}
+
+.menu-panel {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  min-width: 180px;
+  padding: 4px 0;
   border: 1px solid #000;
+  background: #fff;
+  z-index: 50;
+}
+
+.menu-action,
+.menu-check {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-family: inherit;
+  color: #000;
+  background: none;
+  border: none;
   border-radius: 0;
+  text-align: left;
   cursor: pointer;
 }
 
+.menu-action.active {
+  background: #ededed;
+}
+
+.menu-action:hover,
+.menu-check:hover span {
+  text-decoration: underline;
+}
+
+.menu-action:disabled,
+.menu-check input:disabled + span {
+  color: #999;
+  cursor: default;
+}
+
+.menu-check input {
+  margin: 0;
+}
+
 #export-status {
-  padding: 0 0 12px;
   font-size: 10px;
   color: #666;
+  min-width: 220px;
+  padding-top: 2px;
 }
 
 #export-status-text {
@@ -111,26 +188,6 @@ h1 {
 
 body[data-exporting="true"] {
   cursor: progress !important;
-}
-
-.mode-tab {
-  flex: 1;
-  padding: 6px 0;
-  font-family: inherit;
-  font-size: 9px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  color: #999;
-  transition: color 0.1s;
-}
-
-.mode-tab.active {
-  color: #000;
-  border-bottom-color: #000;
 }
 
 /* ── Toolbar (swappable region) ─────────────────────────────────────────────── */

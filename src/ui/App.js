@@ -80,7 +80,6 @@ export class App {
       showVdG: false,
     };
     this.layoutControlsState = {
-      preset: "",
       preserveRatio: false,
       ratioSameAsPage: true,
     };
@@ -125,23 +124,11 @@ export class App {
 
   buildProjectData() {
     if (this.uiState.appMode === "layout") this.syncBookLayoutFromInputs();
-    const pageCount = this.book.pages.length;
     return {
-      version: 1,
+      version: 2,
       layout: { ...this.book.layout },
-      display: { ...this.book.display },
       layoutControls: { ...this.layoutControlsState },
-      ui: {
-        appMode: this.uiState.appMode,
-        currentSpread: this.uiState.currentSpread,
-        editingPageIdx: this.uiState.editingPageIdx,
-        selectedPageIdxs: [...this.uiState.selectedPageIdxs],
-        showMarginArrows: this.uiState.showMarginArrows,
-        showLayoutContent: this.uiState.showLayoutContent,
-        showVdG: this.uiState.showVdG,
-        contentZoom: this.contentZoom,
-      },
-      pageCount,
+      pageCount: this.book.pages.length,
       pages: this.book.pages.map(page => ({
         crop: { ...page.crop },
         cropSourceWidth: page.cropSourceWidth,
@@ -164,6 +151,17 @@ export class App {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  promptLoadContent() {
+    document.getElementById("content-file-input")?.click();
+  }
+
+  async handleContentFileInput(event) {
+    const files = event.target.files;
+    event.target.value = "";
+    if (!files?.length) return;
+    await this.appendFiles(files);
   }
 
   getPageSide(pageIndex) {
@@ -189,13 +187,44 @@ export class App {
       const progress = total > 0 ? (current / total) * 100 : 0;
       progressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
     }
-    const exportButton = document.getElementById("export-pages-btn");
-    if (exportButton) exportButton.disabled = this.exportingPages;
+    [
+      "load-content-btn",
+      "export-pages-btn",
+      "save-project-btn",
+      "load-project-btn",
+      "canvas-zoom-in",
+      "canvas-zoom-out",
+      "show-layout-content",
+      "show-margin-arrows",
+      "vdg",
+    ].forEach(id => {
+      const control = document.getElementById(id);
+      if (control) control.disabled = this.exportingPages;
+    });
+    document.querySelectorAll(".mode-menu-item").forEach(button => {
+      button.disabled = this.exportingPages;
+    });
   }
 
   setExportProgress(label, current = 0, total = 0) {
     this.exportProgress = { label, current, total };
     this.syncExportUI();
+  }
+
+  closeOpenMenus() {
+    document.querySelectorAll(".menu-dropdown[open]").forEach(menu => menu.removeAttribute("open"));
+  }
+
+  syncMenuState() {
+    const showMarginArrows = document.getElementById("show-margin-arrows");
+    if (showMarginArrows) showMarginArrows.checked = this.uiState.showMarginArrows;
+    const showLayoutContent = document.getElementById("show-layout-content");
+    if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
+    const vdg = document.getElementById("vdg");
+    if (vdg) vdg.checked = this.uiState.showVdG;
+    document.querySelectorAll(".mode-menu-item").forEach(button => {
+      button.classList.toggle("active", button.dataset.mode === this.uiState.appMode);
+    });
   }
 
   getNativeExportScale(page, sourceCanvas, side) {
@@ -387,27 +416,15 @@ export class App {
     this.book.layout.mTop = finiteNumber(parseNumber(layout.mTop, this.book.layout.mTop), this.book.layout.mTop);
     this.book.layout.mBottom = finiteNumber(parseNumber(layout.mBottom, this.book.layout.mBottom), this.book.layout.mBottom);
 
-    const display = project.display && typeof project.display === "object" ? project.display : {};
-    if (typeof display.paperColor === "string") this.book.display.paperColor = display.paperColor;
-    if (typeof display.contentBlendMode === "string") this.book.display.contentBlendMode = display.contentBlendMode;
-
     const layoutControls = project.layoutControls && typeof project.layoutControls === "object"
       ? project.layoutControls
       : {};
     this.layoutControlsState = {
-      preset: typeof layoutControls.preset === "string" ? layoutControls.preset : "",
       preserveRatio: !!layoutControls.preserveRatio,
       ratioSameAsPage: "ratioSameAsPage" in layoutControls
         ? !!layoutControls.ratioSameAsPage
         : this.layoutControlsState.ratioSameAsPage,
     };
-
-    const ui = project.ui && typeof project.ui === "object" ? project.ui : {};
-    this.uiState.showMarginArrows = !!ui.showMarginArrows;
-    this.uiState.showLayoutContent = "showLayoutContent" in ui ? !!ui.showLayoutContent : this.uiState.showLayoutContent;
-    this.uiState.showVdG = !!ui.showVdG;
-    this.contentZoom = clamp(parseNumber(ui.contentZoom, this.contentZoom), CONTENT_ZOOM_MIN, CONTENT_ZOOM_MAX);
-    this.renderZoom = this.getSafeRenderZoom(this.contentZoom);
 
     const pageStates = Array.isArray(project.pages) ? project.pages : [];
     const appliedPageCount = Math.min(this.book.pages.length, pageStates.length);
@@ -416,19 +433,17 @@ export class App {
     }
 
     const maxSpread = Math.max(0, this.book.numSpreads() - 1);
-    this.uiState.currentSpread = clamp(Math.round(parseNumber(ui.currentSpread, 0)), 0, maxSpread);
+    this.uiState.currentSpread = clamp(this.uiState.currentSpread, 0, maxSpread);
     this.uiState.effectiveSpread = this.uiState.currentSpread;
     this.uiState.editingPageIdx = this.book.pages.length
-      ? clamp(Math.round(parseNumber(ui.editingPageIdx, 0)), 0, this.book.pages.length - 1)
+      ? clamp(this.uiState.editingPageIdx, 0, this.book.pages.length - 1)
       : 0;
-    const selectedPageIdxs = new Set(
-      (Array.isArray(ui.selectedPageIdxs) ? ui.selectedPageIdxs : [])
-        .map(index => Math.round(parseNumber(index, -1)))
-        .filter(index => index >= 0 && index < this.book.pages.length)
+    this.uiState.selectedPageIdxs = new Set(
+      [...this.uiState.selectedPageIdxs].filter(index => index >= 0 && index < this.book.pages.length)
     );
-    this.uiState.selectedPageIdxs = selectedPageIdxs.size
-      ? selectedPageIdxs
-      : (this.book.pages.length ? new Set([this.uiState.editingPageIdx]) : new Set());
+    if (!this.uiState.selectedPageIdxs.size && this.book.pages.length) {
+      this.uiState.selectedPageIdxs = new Set([this.uiState.editingPageIdx]);
+    }
 
     this.previewLayoutKey = this.getPlacedPreviewLayoutKey();
     this.pageStrip.invalidateAllThumbnails();
@@ -439,16 +454,10 @@ export class App {
       this.lazyPageLoader.warmAllPreviews();
     }
 
-    const nextMode = ui.appMode === "content" || ui.appMode === "layout"
-      ? ui.appMode
-      : this.uiState.appMode;
-    if (nextMode !== this.uiState.appMode) {
-      this.switchMode(nextMode);
-    } else {
-      if (nextMode === "layout") this.restoreLayoutInputs();
-      else this.syncPageUI();
-      this.redraw();
-    }
+    this.syncMenuState();
+    if (this.uiState.appMode === "layout") this.restoreLayoutInputs();
+    else this.syncPageUI();
+    this.redraw();
     this.schedulePreviewRedraw();
   }
 
@@ -457,9 +466,7 @@ export class App {
     this.toolbar.innerHTML = "";
     this.toolbar.appendChild(template.content.cloneNode(true));
     globalThis.htmx?.process(this.toolbar);
-    document.querySelectorAll(".mode-tab").forEach(button => {
-      button.classList.toggle("active", button.dataset.mode === mode);
-    });
+    this.syncMenuState();
   }
 
   addListener(elOrId, type, fn) {
@@ -679,11 +686,6 @@ export class App {
     this.book.layout.mInner = this.getNumber("m-inner");
     this.book.layout.mTop = this.getNumber("m-top");
     this.book.layout.mBottom = this.getNumber("m-bottom");
-    const paperColor = document.getElementById("paper-color")?.value;
-    if (paperColor) this.book.display.paperColor = paperColor;
-    const blendMode = document.getElementById("content-blend")?.value;
-    if (blendMode) this.book.display.contentBlendMode = blendMode;
-    this.layoutControlsState.preset = document.getElementById("preset")?.value || "";
     this.layoutControlsState.preserveRatio = !!document.getElementById("preserve-ratio")?.checked;
     this.layoutControlsState.ratioSameAsPage = !!document.getElementById("ratio-same-as-page")?.checked;
     this.uiState.showVdG = !!document.getElementById("vdg")?.checked;
@@ -699,7 +701,6 @@ export class App {
       const el = document.getElementById(id);
       if (el) el.value = value;
     };
-    setValue("preset", this.layoutControlsState.preset);
     setValue("pw", this.book.layout.pw);
     setValue("ph", this.book.layout.ph);
     setValue("page-ratio", (this.book.layout.pw / this.book.layout.ph).toFixed(3));
@@ -718,11 +719,8 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
-    const paperColor = document.getElementById("paper-color");
-    if (paperColor) paperColor.value = this.book.display.paperColor;
-    const blendMode = document.getElementById("content-blend");
-    if (blendMode) blendMode.value = this.book.display.contentBlendMode;
     this.syncInputs();
+    this.syncMenuState();
   }
 
   applyVdGLayoutValues() {
@@ -743,28 +741,6 @@ export class App {
   }
 
   initLayoutListeners() {
-    this.addListener("paper-color", "input", () => {
-      this.syncBookLayoutFromInputs();
-      this.pageStrip.invalidateAllThumbnails();
-      this.redraw();
-    });
-
-    this.addListener("content-blend", "change", () => {
-      this.syncBookLayoutFromInputs();
-      this.pageStrip.invalidateAllThumbnails();
-      this.redraw();
-    });
-
-    this.addListener("preset", "change", event => {
-      if (!event.target.value) return;
-      const [w, h] = event.target.value.split(",").map(Number);
-      document.getElementById("pw").value = w;
-      document.getElementById("ph").value = h;
-      document.getElementById("page-ratio").value = (w / h).toFixed(3);
-      this.applyVdGLayoutValues();
-      this.redraw();
-    });
-
     this.addListener("page-ratio", "change", event => {
       const ratio = parseFloat(event.target.value);
       if (!ratio || ratio <= 0) return;
@@ -802,17 +778,8 @@ export class App {
 
     ["ratio", "m-inner", "m-top", "m-bottom"].forEach(id => this.addListener(id, "input", () => this.redraw()));
     this.addListener("b-slider", "input", () => this.redraw());
-    this.addListener("vdg", "change", () => this.redraw());
     this.addListener("ratio-same-as-page", "change", () => this.redraw());
     this.addListener("preserve-ratio", "change", () => this.redraw());
-    this.addListener("show-margin-arrows", "change", event => {
-      this.uiState.showMarginArrows = event.target.checked;
-      this.redraw();
-    });
-    this.addListener("show-layout-content", "change", event => {
-      this.uiState.showLayoutContent = event.target.checked;
-      this.redraw();
-    });
     this.addListener("vdg-snap", "click", () => {
       this.applyVdGLayoutValues();
       this.redraw();
@@ -821,13 +788,6 @@ export class App {
   }
 
   initContentListeners() {
-    const marginToggle = document.getElementById("show-margin-arrows");
-    if (marginToggle) marginToggle.checked = this.uiState.showMarginArrows;
-    this.addListener("show-margin-arrows", "change", event => {
-      this.uiState.showMarginArrows = event.target.checked;
-      this.redraw();
-    });
-
     this.addListener("cover-check", "change", event => {
       for (const page of this.getSelectedPages()) page.cover = event.target.checked;
       this.refreshAffectedThumbnails(this.getSelectedPages());
@@ -1341,10 +1301,57 @@ export class App {
     this.spreadCanvas.addEventListener("mouseleave", () => this.handleCanvasMouseLeave());
     document.getElementById("canvas-zoom-in")?.addEventListener("click", () => this.adjustContentZoom(1));
     document.getElementById("canvas-zoom-out")?.addEventListener("click", () => this.adjustContentZoom(-1));
-    document.getElementById("export-pages-btn")?.addEventListener("click", () => this.exportAllPagesNative());
-    document.getElementById("save-project-btn")?.addEventListener("click", () => this.saveProject());
-    document.getElementById("load-project-btn")?.addEventListener("click", () => this.promptLoadProject());
+    document.getElementById("load-content-btn")?.addEventListener("click", () => {
+      this.closeOpenMenus();
+      this.promptLoadContent();
+    });
+    document.getElementById("export-pages-btn")?.addEventListener("click", () => {
+      this.closeOpenMenus();
+      this.exportAllPagesNative();
+    });
+    document.getElementById("save-project-btn")?.addEventListener("click", () => {
+      this.closeOpenMenus();
+      this.saveProject();
+    });
+    document.getElementById("load-project-btn")?.addEventListener("click", () => {
+      this.closeOpenMenus();
+      this.promptLoadProject();
+    });
+    document.getElementById("content-file-input")?.addEventListener("change", event => this.handleContentFileInput(event));
     document.getElementById("project-file-input")?.addEventListener("change", event => this.handleProjectFileInput(event));
+    document.querySelectorAll(".mode-menu-item").forEach(button =>
+      button.addEventListener("click", () => {
+        this.switchMode(button.dataset.mode);
+        this.closeOpenMenus();
+      })
+    );
+    document.getElementById("show-layout-content")?.addEventListener("change", event => {
+      this.uiState.showLayoutContent = event.target.checked;
+      this.closeOpenMenus();
+      this.redraw();
+    });
+    document.getElementById("show-margin-arrows")?.addEventListener("change", event => {
+      this.uiState.showMarginArrows = event.target.checked;
+      this.closeOpenMenus();
+      this.redraw();
+    });
+    document.getElementById("vdg")?.addEventListener("change", event => {
+      this.uiState.showVdG = event.target.checked;
+      this.closeOpenMenus();
+      this.redraw();
+    });
+    document.querySelectorAll(".menu-dropdown").forEach(menu =>
+      menu.addEventListener("toggle", () => {
+        if (!menu.open) return;
+        document.querySelectorAll(".menu-dropdown[open]").forEach(otherMenu => {
+          if (otherMenu !== menu) otherMenu.removeAttribute("open");
+        });
+      })
+    );
+    document.addEventListener("click", event => {
+      if (event.target.closest(".menu-dropdown")) return;
+      this.closeOpenMenus();
+    });
     document.addEventListener("dragover", event => {
       event.preventDefault();
     });
@@ -1394,9 +1401,6 @@ export class App {
       });
       this.schedulePreviewRedraw();
     }, { passive: false });
-    document.querySelectorAll(".mode-tab").forEach(button =>
-      button.addEventListener("click", () => this.switchMode(button.dataset.mode))
-    );
     this.resizeObserver = new ResizeObserver(() => {
       if (this.spreadRenderer.isAnimating) return;
       this.redraw();

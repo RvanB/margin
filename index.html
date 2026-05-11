@@ -9,44 +9,75 @@
 </head>
 <body>
 
-<div id="sidebar">
-  <div id="sidebar-header">
-    <h1>Margins</h1>
-    <div id="mode-tabs">
-      <button class="mode-tab active" data-mode="layout">Layout</button>
-      <button class="mode-tab" data-mode="content">Content</button>
-    </div>
-    <div id="project-controls">
-      <button id="export-pages-btn" type="button">Export pages</button>
-      <button id="save-project-btn" type="button">Save project</button>
-      <button id="load-project-btn" type="button">Load project</button>
-      <input id="project-file-input" type="file" accept=".json,application/json" hidden>
+<div id="top-bar">
+  <div id="top-bar-title">MARGINS</div>
+  <div id="top-bar-main">
+    <div id="menu-bar">
+    <details class="menu-dropdown">
+      <summary>File</summary>
+      <div class="menu-panel">
+        <button id="load-content-btn" type="button" class="menu-action">Load content</button>
+        <button id="export-pages-btn" type="button" class="menu-action">Export</button>
+        <button id="save-project-btn" type="button" class="menu-action">Save settings</button>
+        <button id="load-project-btn" type="button" class="menu-action">Load settings</button>
+        <input id="content-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
+        <input id="project-file-input" type="file" accept=".json,application/json" hidden>
+      </div>
+    </details>
+    <details class="menu-dropdown">
+      <summary>Mode</summary>
+      <div class="menu-panel">
+        <button type="button" class="menu-action mode-menu-item active" data-mode="layout">Layout</button>
+        <button type="button" class="menu-action mode-menu-item" data-mode="content">Content</button>
+      </div>
+    </details>
+    <details class="menu-dropdown">
+      <summary>View</summary>
+      <div class="menu-panel">
+        <label class="menu-check">
+          <input type="checkbox" id="show-layout-content" checked>
+          <span>Show content</span>
+        </label>
+        <label class="menu-check">
+          <input type="checkbox" id="show-margin-arrows">
+          <span>Show margin arrows</span>
+        </label>
+        <label class="menu-check">
+          <input type="checkbox" id="vdg">
+          <span>van de Graaf</span>
+        </label>
+      </div>
+    </details>
     </div>
     <div id="export-status" aria-live="polite" hidden>
       <div id="export-status-text"></div>
       <div id="export-progress"><div id="export-progress-fill"></div></div>
     </div>
   </div>
-
-  <div id="toolbar"><!-- populated by JS --></div>
 </div>
 
-<div id="canvas-wrap">
-  <div id="canvas-area">
-    <div id="canvas-area-inner">
-      <div id="canvas-stage">
-        <canvas id="spread-canvas"></canvas>
-        <canvas id="overlay-canvas"></canvas>
+<div id="app-shell">
+  <div id="sidebar">
+    <div id="toolbar"><!-- populated by JS --></div>
+  </div>
+
+  <div id="canvas-wrap">
+    <div id="canvas-area">
+      <div id="canvas-area-inner">
+        <div id="canvas-stage">
+          <canvas id="spread-canvas"></canvas>
+          <canvas id="overlay-canvas"></canvas>
+        </div>
       </div>
     </div>
-  </div>
-  <div id="canvas-controls">
-    <div id="canvas-zoom-controls" aria-label="Canvas zoom">
-      <button id="canvas-zoom-in" type="button" aria-label="Zoom in">+</button>
-      <button id="canvas-zoom-out" type="button" aria-label="Zoom out">-</button>
+    <div id="canvas-controls">
+      <div id="canvas-zoom-controls" aria-label="Canvas zoom">
+        <button id="canvas-zoom-in" type="button" aria-label="Zoom in">+</button>
+        <button id="canvas-zoom-out" type="button" aria-label="Zoom out">-</button>
+      </div>
     </div>
+    <div id="page-strip"></div>
   </div>
-  <div id="page-strip"></div>
 </div>
 
 <div id="busy-overlay" hidden aria-hidden="true">Exporting…</div>
@@ -54,23 +85,6 @@
 <!-- ── Toolbar templates ───────────────────────────────────────────────────── -->
 
 <template id="tpl-layout">
-
-  <div class="section">
-    <div class="section-label">Page preset</div>
-    <select id="preset">
-      <option value="">— custom —</option>
-      <option value="8.5,11">US Letter (8.5 × 11)</option>
-      <option value="5.5,8.5" selected>Half Letter (5.5 × 8.5)</option>
-      <option value="6,9">Trade Paperback (6 × 9)</option>
-      <option value="5.25,8">Digest (5.25 × 8)</option>
-      <option value="4.19,6.75">Mass Market PB (4.19 × 6.75)</option>
-      <option value="8.27,11.69">A4 (8.27 × 11.69)</option>
-      <option value="5.83,8.27">A5 (5.83 × 8.27)</option>
-      <option value="4.13,5.83">A6 (4.13 × 5.83)</option>
-      <option value="6.93,9.84">B5 (6.93 × 9.84)</option>
-    </select>
-  </div>
-
   <div class="section">
     <div class="section-label">Page (inches)</div>
     <div class="dim-row">
@@ -131,33 +145,8 @@
   </div>
 
   <div class="section">
-    <div class="section-label">Display</div>
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-      <input type="checkbox" id="show-layout-content" checked>
-      <span style="font-size:11px">Show content (C)</span>
-    </label>
-    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:8px">
-      <input type="checkbox" id="show-margin-arrows">
-      <span style="font-size:11px">Show margin arrows (M)</span>
-    </label>
-    <div class="dim-row" style="margin-top:10px;margin-bottom:0;align-items:center">
-      <label>paper</label>
-      <input type="color" id="paper-color" value="#ffffff">
-    </div>
-    <div class="dim-row" style="margin-top:6px;margin-bottom:0">
-      <label>blend</label>
-      <select id="content-blend">
-        <option value="source-over">normal</option>
-        <option value="multiply">multiply</option>
-        <option value="screen">screen</option>
-        <option value="overlay">overlay</option>
-      </select>
-    </div>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-        <input type="checkbox" id="vdg">
-        <span style="font-size:11px">van de Graaf (V)</span>
-      </label>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div class="section-label" style="margin:0">van de Graaf</div>
       <button id="vdg-snap" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:1px solid #000;padding:2px 6px;cursor:pointer">Apply</button>
     </div>
   </div>
