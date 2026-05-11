@@ -142,46 +142,55 @@ export function drawVdG(ctx, pagePxW, pagePxH) {
 export function drawMarginOverlay(ctx, side, margins, fontSize) {
   if (!side?.overlayVisible) return;
 
-  const { pageRect, textblockRect } = side;
+  const { pageRect } = side;
+  const overlayRect = side.overlayRect || side.textblockRect || side.contentRect;
+  if (!overlayRect) return;
+  const scale = margins.scale || 1;
   const midY = pageRect.y + pageRect.h / 2;
-  const labelX = textblockRect.x + textblockRect.w / 2;
+  const labelX = overlayRect.x + overlayRect.w / 2;
+  const top = (overlayRect.y - pageRect.y) / scale;
+  const bottom = (pageRect.y + pageRect.h - (overlayRect.y + overlayRect.h)) / scale;
+  const leftGap = (overlayRect.x - pageRect.x) / scale;
+  const rightGap = (pageRect.x + pageRect.w - (overlayRect.x + overlayRect.w)) / scale;
+  const outer = side.side === "left" ? leftGap : rightGap;
+  const inner = side.side === "left" ? rightGap : leftGap;
 
   ctx.save();
   ctx.strokeStyle = "#000";
   ctx.lineWidth = 1;
   ctx.setLineDash([1, 2]);
-  snappedStrokeRect(ctx, textblockRect.x, textblockRect.y, textblockRect.w, textblockRect.h);
+  snappedStrokeRect(ctx, overlayRect.x, overlayRect.y, overlayRect.w, overlayRect.h);
   ctx.restore();
 
   if (side.side === "left") {
-    hArrowLabel(ctx, pageRect.x, textblockRect.x, midY, `${margins.outer.toFixed(2)}″`, fontSize);
+    hArrowLabel(ctx, pageRect.x, overlayRect.x, midY, `${outer.toFixed(2)}″`, fontSize);
     hArrowLabel(
       ctx,
-      textblockRect.x + textblockRect.w,
+      overlayRect.x + overlayRect.w,
       pageRect.x + pageRect.w,
       midY,
-      `${margins.inner.toFixed(2)}″`,
+      `${inner.toFixed(2)}″`,
       fontSize
     );
   } else {
-    hArrowLabel(ctx, pageRect.x, textblockRect.x, midY, `${margins.inner.toFixed(2)}″`, fontSize);
+    hArrowLabel(ctx, pageRect.x, overlayRect.x, midY, `${inner.toFixed(2)}″`, fontSize);
     hArrowLabel(
       ctx,
-      textblockRect.x + textblockRect.w,
+      overlayRect.x + overlayRect.w,
       pageRect.x + pageRect.w,
       midY,
-      `${margins.outer.toFixed(2)}″`,
+      `${outer.toFixed(2)}″`,
       fontSize
     );
   }
 
-  bracketLabel(ctx, labelX, pageRect.y, textblockRect.y, `${margins.top.toFixed(2)}″`, fontSize);
+  bracketLabel(ctx, labelX, pageRect.y, overlayRect.y, `${top.toFixed(2)}″`, fontSize);
   bracketLabel(
     ctx,
     labelX,
-    textblockRect.y + textblockRect.h,
+    overlayRect.y + overlayRect.h,
     pageRect.y + pageRect.h,
-    `${margins.bottom.toFixed(2)}″`,
+    `${bottom.toFixed(2)}″`,
     fontSize
   );
 }

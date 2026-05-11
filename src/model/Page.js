@@ -21,6 +21,7 @@ export class Page {
     cropSourceWidth = 0,
     cropSourceHeight = 0,
     cover = false,
+    spread = false,
     fitAxis = "inside",
   } = {}) {
     this.source = source;
@@ -35,6 +36,7 @@ export class Page {
     this.cropSourceWidth = cropSourceWidth;
     this.cropSourceHeight = cropSourceHeight;
     this.cover = cover;
+    this.spread = spread;
     this.fitAxis = normalizeFitAxis(fitAxis);
   }
 

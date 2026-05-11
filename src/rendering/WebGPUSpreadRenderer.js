@@ -1,5 +1,6 @@
 import { drawPageBorder } from "./primitives.js";
 import { SpreadRenderer } from "./SpreadRenderer.js";
+import { getPageGeometry } from "./layout.js";
 
 const MAX_SHADOW_OCCLUDERS = 8;
 const TURN_EASING_POWER = 3;
@@ -55,44 +56,22 @@ function setBackendName(name) {
 
 function buildSideStates(margins, pages, hasPlacedPages) {
   const build = (sideName, entry) => {
-    const isLeft = sideName === "left";
     const page = entry?.page ?? null;
-    const fitMode = page?.fitAxis === "width" || page?.fitAxis === "height" || page?.fitAxis === "inside"
-      ? page.fitAxis
-      : "inside";
-    const pageRect = {
-      x: isLeft ? 0 : margins.pagePxW,
-      y: 0,
-      w: margins.pagePxW,
-      h: margins.pagePxH,
-    };
-    const textblockRect = {
-      x: isLeft ? margins.outerPx : margins.pagePxW + margins.innerPx,
-      y: margins.topPx,
-      w: margins.twPx,
-      h: margins.thPx,
-    };
+    const geometry = getPageGeometry(
+      margins,
+      sideName,
+      page,
+      sideName === "left" ? 0 : margins.pagePxW
+    );
     const isBlank = hasPlacedPages && !page;
-    const isCover = !!page?.cover;
 
     return {
       side: sideName,
       page,
       pageIndex: entry?.pageIndex ?? -1,
       isBlank,
-      isCover,
-      overlayVisible: !isBlank && !isCover,
-      pageRect,
-      textblockRect,
-      contentRect: isCover ? pageRect : textblockRect,
-      contentMode: isCover
-        ? "fill"
-        : fitMode === "width"
-          ? "fit-width"
-          : fitMode === "height"
-            ? "fit-height"
-            : "fit",
-      clipContent: isCover,
+      ...geometry,
+      overlayVisible: !isBlank && geometry.overlayVisible,
       drawnRect: null,
     };
   };
@@ -103,7 +82,7 @@ function buildSideStates(margins, pages, hasPlacedPages) {
   };
 }
 
-function measurePageDraw(page, rect, mode) {
+function measurePageDraw(page, rect, mode, alignX = "center") {
   const sourceCanvas = page?.displayCanvas;
   if (!sourceCanvas) return null;
 
@@ -119,9 +98,14 @@ function measurePageDraw(page, rect, mode) {
       : mode === "fit-height"
         ? rect.h / sourceHeight
         : Math.min(rect.w / sourceWidth, rect.h / sourceHeight);
+  const alignedX = alignX === "start"
+    ? rect.x
+    : alignX === "end"
+      ? rect.x + rect.w - sourceWidth * scale
+      : rect.x + (rect.w - sourceWidth * scale) / 2;
 
   const drawRect = {
-    x: Math.round(rect.x + (rect.w - sourceWidth * scale) / 2 - crop.left * scale),
+    x: Math.round(alignedX - crop.left * scale),
     y: Math.round(rect.y + (rect.h - sourceHeight * scale) / 2 - crop.top * scale),
     w: Math.max(1, Math.round(sourceCanvas.width * scale)),
     h: Math.max(1, Math.round(sourceCanvas.height * scale)),
@@ -1021,7 +1005,12 @@ export class WebGPUSpreadRenderer {
     for (const sideName of ["left", "right"]) {
       const sideState = sideStates[sideName];
       if (!sideState.page) continue;
-      const measurement = measurePageDraw(sideState.page, sideState.contentRect, sideState.contentMode);
+      const measurement = measurePageDraw(
+        sideState.page,
+        sideState.contentRect,
+        sideState.contentMode,
+        sideState.contentAlignX
+      );
       sideState.drawnRect = measurement?.visibleRect ?? null;
     }
 
@@ -1287,7 +1276,12 @@ export class WebGPUSpreadRenderer {
       return sideState.page.placedPreviewCanvas;
     }
 
-    const measurement = measurePageDraw(sideState.page, sideState.contentRect, sideState.contentMode);
+    const measurement = measurePageDraw(
+      sideState.page,
+      sideState.contentRect,
+      sideState.contentMode,
+      sideState.contentAlignX
+    );
     const surfaceScale = getPageSurfaceScale(sideState.pageRect, measurement, scene.previewZoom);
     const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
     const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
@@ -1307,10 +1301,11 @@ export class WebGPUSpreadRenderer {
         Math.round(sideState.contentRect.x - sideState.pageRect.x),
         Math.round(sideState.contentRect.y - sideState.pageRect.y),
         Math.round(sideState.contentRect.w),
-          Math.round(sideState.contentRect.h),
-          sideState.contentMode,
-          Math.round(clampedSurfaceScale * 1000),
-        ].join("|")
+        Math.round(sideState.contentRect.h),
+        sideState.contentAlignX,
+        sideState.contentMode,
+        Math.round(clampedSurfaceScale * 1000),
+      ].join("|")
       : null;
 
     let pageCache = this.pageSurfaceCache.get(sideState.page);

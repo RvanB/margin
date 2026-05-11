@@ -1,5 +1,5 @@
 import { Book } from "../model/Book.js";
-import { Page } from "../model/Page.js";
+import { Page, normalizeFitAxis } from "../model/Page.js";
 import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { loadImagePreview } from "../loading/imageLoader.js";
@@ -14,6 +14,28 @@ import { PageStrip } from "./PageStrip.js";
 
 function cloneSet(set) {
   return new Set([...set]);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function finiteNumber(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function parseNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function normalizeCrop(crop) {
+  return {
+    top: Math.max(0, Math.round(parseNumber(crop?.top))),
+    left: Math.max(0, Math.round(parseNumber(crop?.left))),
+    right: Math.max(0, Math.round(parseNumber(crop?.right))),
+    bottom: Math.max(0, Math.round(parseNumber(crop?.bottom))),
+  };
 }
 
 
@@ -88,6 +110,163 @@ export class App {
     this.initLayoutListeners();
     this.bindGlobalListeners();
     this.redraw();
+  }
+
+  buildProjectData() {
+    if (this.uiState.appMode === "layout") this.syncBookLayoutFromInputs();
+    const pageCount = this.book.pages.length;
+    return {
+      version: 1,
+      layout: { ...this.book.layout },
+      display: { ...this.book.display },
+      layoutControls: { ...this.layoutControlsState },
+      ui: {
+        appMode: this.uiState.appMode,
+        currentSpread: this.uiState.currentSpread,
+        editingPageIdx: this.uiState.editingPageIdx,
+        selectedPageIdxs: [...this.uiState.selectedPageIdxs],
+        showMarginArrows: this.uiState.showMarginArrows,
+        showLayoutContent: this.uiState.showLayoutContent,
+        showVdG: this.uiState.showVdG,
+        contentZoom: this.contentZoom,
+      },
+      pageCount,
+      pages: this.book.pages.map(page => ({
+        crop: { ...page.crop },
+        cropSourceWidth: page.cropSourceWidth,
+        cropSourceHeight: page.cropSourceHeight,
+        cover: !!page.cover,
+        spread: !!page.spread,
+        fitAxis: normalizeFitAxis(page.fitAxis),
+      })),
+    };
+  }
+
+  saveProject() {
+    const project = this.buildProjectData();
+    const blob = new Blob([`${JSON.stringify(project, null, 2)}\n`], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "margins-project.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  promptLoadProject() {
+    document.getElementById("project-file-input")?.click();
+  }
+
+  async handleProjectFileInput(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      this.applyProjectData(JSON.parse(await file.text()));
+    } catch (error) {
+      console.error("Failed to load project:", error);
+      window.alert("Could not load project JSON.");
+    }
+  }
+
+  applyProjectPageState(page, pageState) {
+    if (!page || !pageState || typeof pageState !== "object") return;
+    page.crop = normalizeCrop(pageState.crop);
+    page.cropSourceWidth = Math.max(0, Math.round(parseNumber(pageState.cropSourceWidth)));
+    page.cropSourceHeight = Math.max(0, Math.round(parseNumber(pageState.cropSourceHeight)));
+    page.cover = !!pageState.cover;
+    page.spread = !!pageState.spread;
+    page.fitAxis = normalizeFitAxis(pageState.fitAxis);
+    this.markPlacedPreviewDirty(page);
+  }
+
+  applyProjectData(project) {
+    if (!project || typeof project !== "object") {
+      throw new Error("Invalid project data");
+    }
+
+    if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
+    this.endInteractiveContentPreview({ redraw: false });
+    this.spreadRenderer.stopAnimation();
+    this.animationCompletionScheduled = false;
+    this.animationDirection = 0;
+    this.contentEffectCaches = new WeakMap();
+    this.overlayCanvas.style.visibility = "";
+
+    const layout = project.layout && typeof project.layout === "object" ? project.layout : {};
+    this.book.layout.pw = finiteNumber(parseNumber(layout.pw, this.book.layout.pw), this.book.layout.pw);
+    this.book.layout.ph = finiteNumber(parseNumber(layout.ph, this.book.layout.ph), this.book.layout.ph);
+    this.book.layout.ratio = finiteNumber(parseNumber(layout.ratio, this.book.layout.ratio), this.book.layout.ratio);
+    this.book.layout.b = finiteNumber(parseNumber(layout.b, this.book.layout.b), this.book.layout.b);
+    this.book.layout.mInner = finiteNumber(parseNumber(layout.mInner, this.book.layout.mInner), this.book.layout.mInner);
+    this.book.layout.mTop = finiteNumber(parseNumber(layout.mTop, this.book.layout.mTop), this.book.layout.mTop);
+    this.book.layout.mBottom = finiteNumber(parseNumber(layout.mBottom, this.book.layout.mBottom), this.book.layout.mBottom);
+
+    const display = project.display && typeof project.display === "object" ? project.display : {};
+    if (typeof display.paperColor === "string") this.book.display.paperColor = display.paperColor;
+    if (typeof display.contentBlendMode === "string") this.book.display.contentBlendMode = display.contentBlendMode;
+
+    const layoutControls = project.layoutControls && typeof project.layoutControls === "object"
+      ? project.layoutControls
+      : {};
+    this.layoutControlsState = {
+      preset: typeof layoutControls.preset === "string" ? layoutControls.preset : "",
+      preserveRatio: !!layoutControls.preserveRatio,
+      ratioSameAsPage: "ratioSameAsPage" in layoutControls
+        ? !!layoutControls.ratioSameAsPage
+        : this.layoutControlsState.ratioSameAsPage,
+    };
+
+    const ui = project.ui && typeof project.ui === "object" ? project.ui : {};
+    this.uiState.showMarginArrows = !!ui.showMarginArrows;
+    this.uiState.showLayoutContent = "showLayoutContent" in ui ? !!ui.showLayoutContent : this.uiState.showLayoutContent;
+    this.uiState.showVdG = !!ui.showVdG;
+    this.contentZoom = clamp(parseNumber(ui.contentZoom, this.contentZoom), CONTENT_ZOOM_MIN, CONTENT_ZOOM_MAX);
+    this.renderZoom = this.getSafeRenderZoom(this.contentZoom);
+
+    const pageStates = Array.isArray(project.pages) ? project.pages : [];
+    const appliedPageCount = Math.min(this.book.pages.length, pageStates.length);
+    for (let pageIndex = 0; pageIndex < appliedPageCount; pageIndex += 1) {
+      this.applyProjectPageState(this.book.pages[pageIndex], pageStates[pageIndex]);
+    }
+
+    const maxSpread = Math.max(0, this.book.numSpreads() - 1);
+    this.uiState.currentSpread = clamp(Math.round(parseNumber(ui.currentSpread, 0)), 0, maxSpread);
+    this.uiState.effectiveSpread = this.uiState.currentSpread;
+    this.uiState.editingPageIdx = this.book.pages.length
+      ? clamp(Math.round(parseNumber(ui.editingPageIdx, 0)), 0, this.book.pages.length - 1)
+      : 0;
+    const selectedPageIdxs = new Set(
+      (Array.isArray(ui.selectedPageIdxs) ? ui.selectedPageIdxs : [])
+        .map(index => Math.round(parseNumber(index, -1)))
+        .filter(index => index >= 0 && index < this.book.pages.length)
+    );
+    this.uiState.selectedPageIdxs = selectedPageIdxs.size
+      ? selectedPageIdxs
+      : (this.book.pages.length ? new Set([this.uiState.editingPageIdx]) : new Set());
+
+    this.previewLayoutKey = this.getPlacedPreviewLayoutKey();
+    this.pageStrip.invalidateAllThumbnails();
+    this.refreshAllPlacedPreviews();
+    this.lazyPageLoader.reset();
+    if (this.book.pages.length) {
+      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
+      this.lazyPageLoader.warmAllPreviews();
+    }
+
+    const nextMode = ui.appMode === "content" || ui.appMode === "layout"
+      ? ui.appMode
+      : this.uiState.appMode;
+    if (nextMode !== this.uiState.appMode) {
+      this.switchMode(nextMode);
+    } else {
+      if (nextMode === "layout") this.restoreLayoutInputs();
+      else this.syncPageUI();
+      this.redraw();
+    }
+    this.schedulePreviewRedraw();
   }
 
   mountToolbar(mode) {
@@ -473,6 +652,13 @@ export class App {
       this.redraw();
     });
 
+    this.addListener("spread-check", "change", event => {
+      for (const page of this.getSelectedPages()) page.spread = event.target.checked;
+      this.refreshAffectedThumbnails(this.getSelectedPages());
+      this.syncPageUI();
+      this.redraw();
+    });
+
     if (this.book.pages.length) this.syncPageUI();
   }
 
@@ -533,11 +719,19 @@ export class App {
   syncPageUI() {
     const section = this.getToolbarControl("toolbar");
     if (section) section.style.display = "";
-    const page = this.getEditingPage();
-    if (!page) return;
+    if (!this.getEditingPage()) return;
+    const selectedPages = this.getSelectedPages();
+    const syncToggle = (id, key) => {
+      const input = this.getToolbarControl(id);
+      if (!input) return;
+      const allEnabled = selectedPages.every(selectedPage => !!selectedPage?.[key]);
+      const allDisabled = selectedPages.every(selectedPage => !selectedPage?.[key]);
+      input.checked = allEnabled;
+      input.indeterminate = !allEnabled && !allDisabled;
+    };
 
-    const cover = this.getToolbarControl("cover-check");
-    if (cover) cover.checked = page.cover;
+    syncToggle("cover-check", "cover");
+    syncToggle("spread-check", "spread");
     const selectionCount = this.getToolbarControl("selection-count");
     if (selectionCount) {
       const count = this.uiState.selectedPageIdxs.size;
@@ -963,6 +1157,9 @@ export class App {
     this.spreadCanvas.addEventListener("mouseleave", () => this.handleCanvasMouseLeave());
     document.getElementById("canvas-zoom-in")?.addEventListener("click", () => this.adjustContentZoom(1));
     document.getElementById("canvas-zoom-out")?.addEventListener("click", () => this.adjustContentZoom(-1));
+    document.getElementById("save-project-btn")?.addEventListener("click", () => this.saveProject());
+    document.getElementById("load-project-btn")?.addEventListener("click", () => this.promptLoadProject());
+    document.getElementById("project-file-input")?.addEventListener("change", event => this.handleProjectFileInput(event));
     document.addEventListener("dragover", event => event.preventDefault());
     document.addEventListener("drop", event => {
       event.preventDefault();

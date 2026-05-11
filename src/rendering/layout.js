@@ -41,6 +41,56 @@ export function computeMargins(layout, scale) {
   };
 }
 
+export function getPageGeometry(margins, sideName, page, pageRectX = 0) {
+  const isLeft = sideName === "left";
+  const fitMode = page?.fitAxis === "width" || page?.fitAxis === "height" || page?.fitAxis === "inside"
+    ? page.fitAxis
+    : "inside";
+  const pageRect = {
+    x: pageRectX,
+    y: 0,
+    w: margins.pagePxW,
+    h: margins.pagePxH,
+  };
+  const textblockRect = {
+    x: isLeft ? pageRect.x + margins.outerPx : pageRect.x + margins.innerPx,
+    y: margins.topPx,
+    w: margins.twPx,
+    h: margins.thPx,
+  };
+  const isCover = !!page?.cover;
+  const isSpread = !!page?.spread && !isCover;
+  const overlayRect = isSpread
+    ? {
+        x: isLeft ? textblockRect.x : pageRect.x,
+        y: textblockRect.y,
+        w: isLeft
+          ? pageRect.x + pageRect.w - textblockRect.x
+          : textblockRect.x + textblockRect.w - pageRect.x,
+        h: textblockRect.h,
+      }
+    : textblockRect;
+
+  return {
+    isCover,
+    isSpread,
+    pageRect,
+    textblockRect,
+    overlayRect,
+    contentRect: isCover ? pageRect : overlayRect,
+    contentAlignX: isSpread ? (isLeft ? "end" : "start") : "center",
+    contentMode: isCover
+      ? "fill"
+      : fitMode === "width"
+        ? "fit-width"
+        : fitMode === "height"
+          ? "fit-height"
+          : "fit",
+    clipContent: isCover,
+    overlayVisible: !isCover,
+  };
+}
+
 export function computeScale(layout, containerW, containerH) {
   return Math.min((containerW - 64) / (2 * layout.pw), (containerH - 64) / layout.ph);
 }

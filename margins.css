@@ -47,6 +47,26 @@ h1 {
   border-top: 1px dotted #000;
 }
 
+#project-controls {
+  display: flex;
+  gap: 6px;
+  padding: 10px 0 12px;
+  border-top: 1px dotted #000;
+}
+
+#project-controls button {
+  flex: 1;
+  padding: 5px 6px;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: none;
+  border: 1px solid #000;
+  border-radius: 0;
+  cursor: pointer;
+}
+
 .mode-tab {
   flex: 1;
   padding: 6px 0;

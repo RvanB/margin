@@ -1,7 +1,7 @@
 import { drawPageBorder } from "./primitives.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
-import { computeMargins } from "./layout.js";
+import { computeMargins, getPageGeometry } from "./layout.js";
 
 const TURN_EASING_POWER = 3;
 const TURN_DURATION_MS = 750;
@@ -72,17 +72,8 @@ export class SpreadRenderer {
     if (!sourceCanvas || !layout) return pageCanvas;
 
     const margins = computeMargins(layout, pageHeight / layout.ph);
-    const fitMode = page?.fitAxis === "width" || page?.fitAxis === "height" || page?.fitAxis === "inside"
-      ? page.fitAxis
-      : "inside";
-    const contentRect = page?.cover
-      ? { x: 0, y: 0, w: pageWidth, h: pageHeight }
-      : {
-          x: side === "left" ? margins.outerPx : margins.innerPx,
-          y: margins.topPx,
-          w: margins.twPx,
-          h: margins.thPx,
-        };
+    const geometry = getPageGeometry(margins, side, page, 0);
+    const contentRect = geometry.contentRect;
     this.#drawPageContent(
       pageCtx,
       page,
@@ -93,14 +84,9 @@ export class SpreadRenderer {
       effectEntry,
       display.contentBlendMode,
       {
-        mode: page?.cover
-          ? "fill"
-          : fitMode === "width"
-            ? "fit-width"
-            : fitMode === "height"
-              ? "fit-height"
-              : "fit",
-        clipToRect: !!page?.cover,
+        mode: geometry.contentMode,
+        clipToRect: geometry.clipContent,
+        alignX: geometry.contentAlignX,
         sourceCanvas,
         crop: this.#getThumbnailCrop(page, sourceCanvas, effectEntry),
       }
@@ -183,6 +169,7 @@ export class SpreadRenderer {
                 {
                   mode: sideState.contentMode,
                   clipToRect: sideState.clipContent,
+                  alignX: sideState.contentAlignX,
                 }
               );
         }
@@ -207,44 +194,22 @@ export class SpreadRenderer {
 
   #buildSideStates(margins, pages, hasPlacedPages) {
     const build = (sideName, entry) => {
-      const isLeft = sideName === "left";
       const page = entry?.page ?? null;
-      const fitMode = page?.fitAxis === "width" || page?.fitAxis === "height" || page?.fitAxis === "inside"
-        ? page.fitAxis
-        : "inside";
-      const pageRect = {
-        x: isLeft ? 0 : margins.pagePxW,
-        y: 0,
-        w: margins.pagePxW,
-        h: margins.pagePxH,
-      };
-      const textblockRect = {
-        x: isLeft ? margins.outerPx : margins.pagePxW + margins.innerPx,
-        y: margins.topPx,
-        w: margins.twPx,
-        h: margins.thPx,
-      };
+      const geometry = getPageGeometry(
+        margins,
+        sideName,
+        page,
+        sideName === "left" ? 0 : margins.pagePxW
+      );
       const isBlank = hasPlacedPages && !page;
-      const isCover = !!page?.cover;
 
       return {
         side: sideName,
         page,
         pageIndex: entry?.pageIndex ?? -1,
         isBlank,
-        isCover,
-        overlayVisible: !isBlank && !isCover,
-        pageRect,
-        textblockRect,
-        contentRect: isCover ? pageRect : textblockRect,
-        contentMode: isCover
-          ? "fill"
-          : fitMode === "width"
-            ? "fit-width"
-            : fitMode === "height"
-              ? "fit-height"
-              : "fit",
-        clipContent: isCover,
+        ...geometry,
+        overlayVisible: !isBlank && geometry.overlayVisible,
         drawnRect: null,
       };
     };
@@ -308,6 +273,7 @@ export class SpreadRenderer {
       {
         mode: sideState.contentMode,
         clipToRect: sideState.clipContent,
+        alignX: sideState.contentAlignX,
       }
     );
     ctx.drawImage(
@@ -387,7 +353,12 @@ export class SpreadRenderer {
           ? h / sourceHeight
           : Math.min(w / sourceWidth, h / sourceHeight);
 
-    const drawX = Math.round(x + (w - sourceWidth * scale) / 2 - crop.left * scale);
+    const alignedX = options.alignX === "start"
+      ? x
+      : options.alignX === "end"
+        ? x + w - sourceWidth * scale
+        : x + (w - sourceWidth * scale) / 2;
+    const drawX = Math.round(alignedX - crop.left * scale);
     const drawY = Math.round(y + (h - sourceHeight * scale) / 2 - crop.top * scale);
     const drawW = Math.max(1, Math.round(sourceCanvas.width * scale));
     const drawH = Math.max(1, Math.round(sourceCanvas.height * scale));
