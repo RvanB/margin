@@ -88,7 +88,7 @@ function buildSideStates(margins, pages, hasPlacedPages) {
   };
 }
 
-function measurePageDraw(page, rect, mode, alignX = "center") {
+function measurePageDraw(page, rect, mode, alignX = "center", alignY = "center") {
   const sourceCanvas = page?.displayCanvas;
   if (!sourceCanvas) return null;
 
@@ -109,10 +109,15 @@ function measurePageDraw(page, rect, mode, alignX = "center") {
     : alignX === "end"
       ? rect.x + rect.w - sourceWidth * scale
       : rect.x + (rect.w - sourceWidth * scale) / 2;
+  const alignedY = alignY === "start"
+    ? rect.y
+    : alignY === "end"
+      ? rect.y + rect.h - sourceHeight * scale
+      : rect.y + (rect.h - sourceHeight * scale) / 2;
 
   const drawRect = {
     x: Math.round(alignedX - crop.left * scale),
-    y: Math.round(rect.y + (rect.h - sourceHeight * scale) / 2 - crop.top * scale),
+    y: Math.round(alignedY - crop.top * scale),
     w: Math.max(1, Math.round(sourceCanvas.width * scale)),
     h: Math.max(1, Math.round(sourceCanvas.height * scale)),
   };
@@ -1017,7 +1022,8 @@ export class WebGPUSpreadRenderer {
         sideState.page,
         sideState.contentRect,
         sideState.contentMode,
-        sideState.contentAlignX
+        sideState.contentAlignX,
+        sideState.contentAlignY
       );
       sideState.drawnRect = measurement?.visibleRect ?? null;
     }
@@ -1289,7 +1295,8 @@ export class WebGPUSpreadRenderer {
       sideState.page,
       sideState.contentRect,
       sideState.contentMode,
-      sideState.contentAlignX
+      sideState.contentAlignX,
+      sideState.contentAlignY
     );
     const surfaceScale = getPageSurfaceScale(sideState.pageRect, measurement, scene.previewZoom);
     const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
@@ -1312,6 +1319,7 @@ export class WebGPUSpreadRenderer {
         Math.round(sideState.contentRect.w),
         Math.round(sideState.contentRect.h),
         sideState.contentAlignX,
+        sideState.contentAlignY,
         sideState.contentMode,
         Math.round(clampedSurfaceScale * 1000),
       ].join("|")

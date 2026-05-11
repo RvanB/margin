@@ -60,6 +60,9 @@ export function getPageGeometry(margins, sideName, page, pageRectX = 0) {
   };
   const isCover = !!page?.cover;
   const isSpread = !!page?.spread && !isCover;
+  const effectiveAlignX = page?.contentAlignX
+    || (isSpread ? (isLeft ? "right" : "left") : "center");
+  const effectiveAlignY = page?.contentAlignY || "center";
   const overlayRect = isSpread
     ? {
         x: isLeft ? textblockRect.x : pageRect.x,
@@ -78,7 +81,8 @@ export function getPageGeometry(margins, sideName, page, pageRectX = 0) {
     textblockRect,
     overlayRect,
     contentRect: isCover ? pageRect : overlayRect,
-    contentAlignX: isSpread ? (isLeft ? "end" : "start") : "center",
+    contentAlignX: effectiveAlignX === "left" ? "start" : effectiveAlignX === "right" ? "end" : "center",
+    contentAlignY: effectiveAlignY === "top" ? "start" : effectiveAlignY === "bottom" ? "end" : "center",
     contentMode: isCover
       ? "fill"
       : fitMode === "width"

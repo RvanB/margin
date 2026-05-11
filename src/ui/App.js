@@ -1,5 +1,5 @@
 import { Book } from "../model/Book.js";
-import { Page, normalizeFitAxis } from "../model/Page.js";
+import { Page, normalizeContentAlignX, normalizeContentAlignY, normalizeFitAxis } from "../model/Page.js";
 import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { loadImageFile, loadImagePreview } from "../loading/imageLoader.js";
@@ -132,7 +132,7 @@ export class App {
   buildProjectData() {
     if (this.uiState.appMode === "layout") this.syncBookLayoutFromInputs();
     return {
-      version: 2,
+      version: 3,
       layout: { ...this.book.layout },
       layoutControls: { ...this.layoutControlsState },
       pageCount: this.book.pages.length,
@@ -143,6 +143,8 @@ export class App {
         cover: !!page.cover,
         spread: !!page.spread,
         fitAxis: normalizeFitAxis(page.fitAxis),
+        contentAlignX: normalizeContentAlignX(page.contentAlignX),
+        contentAlignY: normalizeContentAlignY(page.contentAlignY),
       })),
     };
   }
@@ -397,6 +399,8 @@ export class App {
     page.cover = !!pageState.cover;
     page.spread = !!pageState.spread;
     page.fitAxis = normalizeFitAxis(pageState.fitAxis);
+    page.contentAlignX = normalizeContentAlignX(pageState.contentAlignX);
+    page.contentAlignY = normalizeContentAlignY(pageState.contentAlignY);
     this.markPlacedPreviewDirty(page);
   }
 
@@ -491,6 +495,20 @@ export class App {
 
   getToolbarControl(id) {
     return this.toolbar?.querySelector(`#${id}`) || document.getElementById(id);
+  }
+
+  getEffectiveContentAlignX(page) {
+    if (!page) return "center";
+    if (page.contentAlignX) return page.contentAlignX;
+    const pageIndex = this.book.pages.indexOf(page);
+    const side = this.getPageSide(pageIndex);
+    return page.spread && !page.cover
+      ? (side === "left" ? "right" : "left")
+      : "center";
+  }
+
+  getEffectiveContentAlignY(page) {
+    return page?.contentAlignY || "center";
   }
 
   markPlacedPreviewDirty(pageOrIndex) {
@@ -813,6 +831,22 @@ export class App {
       this.redraw();
     });
 
+    this.addListener("content-align-x", "change", event => {
+      const value = normalizeContentAlignX(event.target.value);
+      for (const page of this.getSelectedPages()) page.contentAlignX = value;
+      this.refreshAffectedThumbnails(this.getSelectedPages());
+      this.syncPageUI();
+      this.redraw();
+    });
+
+    this.addListener("content-align-y", "change", event => {
+      const value = normalizeContentAlignY(event.target.value);
+      for (const page of this.getSelectedPages()) page.contentAlignY = value;
+      this.refreshAffectedThumbnails(this.getSelectedPages());
+      this.syncPageUI();
+      this.redraw();
+    });
+
     if (this.book.pages.length) this.syncPageUI();
   }
 
@@ -886,6 +920,15 @@ export class App {
 
     syncToggle("cover-check", "cover");
     syncToggle("spread-check", "spread");
+    const syncSelect = (id, getter) => {
+      const input = this.getToolbarControl(id);
+      if (!input) return;
+      const values = selectedPages.map(getter);
+      const first = values[0] || "";
+      input.value = values.every(value => value === first) ? first : "";
+    };
+    syncSelect("content-align-x", page => this.getEffectiveContentAlignX(page));
+    syncSelect("content-align-y", page => this.getEffectiveContentAlignY(page));
     const selectionCount = this.getToolbarControl("selection-count");
     if (selectionCount) {
       const count = this.uiState.selectedPageIdxs.size;

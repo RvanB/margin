@@ -8,6 +8,18 @@ export function normalizeFitAxis(value) {
     : "inside";
 }
 
+export function normalizeContentAlignX(value) {
+  return value === "left" || value === "center" || value === "right"
+    ? value
+    : null;
+}
+
+export function normalizeContentAlignY(value) {
+  return value === "top" || value === "center" || value === "bottom"
+    ? value
+    : null;
+}
+
 export class Page {
   constructor({
     source = null,
@@ -23,6 +35,8 @@ export class Page {
     cover = false,
     spread = false,
     fitAxis = "inside",
+    contentAlignX = null,
+    contentAlignY = null,
   } = {}) {
     this.source = source;
     this.srcCanvas = srcCanvas;
@@ -38,6 +52,8 @@ export class Page {
     this.cover = cover;
     this.spread = spread;
     this.fitAxis = normalizeFitAxis(fitAxis);
+    this.contentAlignX = normalizeContentAlignX(contentAlignX);
+    this.contentAlignY = normalizeContentAlignY(contentAlignY);
   }
 
   get displayCanvas() {

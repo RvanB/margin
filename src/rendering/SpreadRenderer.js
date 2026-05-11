@@ -85,13 +85,14 @@ export class SpreadRenderer {
       contentRect.h,
       effectEntry,
       display.contentBlendMode,
-      {
-        mode: geometry.contentMode,
-        clipToRect: geometry.clipContent,
-        alignX: geometry.contentAlignX,
-        sourceCanvas,
-        crop: this.#getThumbnailCrop(page, sourceCanvas, effectEntry),
-      }
+        {
+          mode: geometry.contentMode,
+          clipToRect: geometry.clipContent,
+          alignX: geometry.contentAlignX,
+          alignY: geometry.contentAlignY,
+          sourceCanvas,
+          crop: this.#getThumbnailCrop(page, sourceCanvas, effectEntry),
+        }
     );
     return pageCanvas;
   }
@@ -172,6 +173,7 @@ export class SpreadRenderer {
                   mode: sideState.contentMode,
                   clipToRect: sideState.clipContent,
                   alignX: sideState.contentAlignX,
+                  alignY: sideState.contentAlignY,
                 }
               );
         }
@@ -272,12 +274,13 @@ export class SpreadRenderer {
       sideState.contentRect.y,
       sideState.contentRect.w,
       sideState.contentRect.h,
-      {
-        mode: sideState.contentMode,
-        clipToRect: sideState.clipContent,
-        alignX: sideState.contentAlignX,
-      }
-    );
+        {
+          mode: sideState.contentMode,
+          clipToRect: sideState.clipContent,
+          alignX: sideState.contentAlignX,
+          alignY: sideState.contentAlignY,
+        }
+      );
     ctx.drawImage(
       previewCanvas,
       Math.round(sideState.pageRect.x),
@@ -360,8 +363,13 @@ export class SpreadRenderer {
       : options.alignX === "end"
         ? x + w - sourceWidth * scale
         : x + (w - sourceWidth * scale) / 2;
+    const alignedY = options.alignY === "start"
+      ? y
+      : options.alignY === "end"
+        ? y + h - sourceHeight * scale
+        : y + (h - sourceHeight * scale) / 2;
     const drawX = Math.round(alignedX - crop.left * scale);
-    const drawY = Math.round(y + (h - sourceHeight * scale) / 2 - crop.top * scale);
+    const drawY = Math.round(alignedY - crop.top * scale);
     const drawW = Math.max(1, Math.round(sourceCanvas.width * scale));
     const drawH = Math.max(1, Math.round(sourceCanvas.height * scale));
     const cropX = Math.round(drawX + crop.left * drawW / sourceCanvas.width);
