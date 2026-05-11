@@ -10,7 +10,7 @@ export function snappedStrokeRect(ctx, x, y, w, h) {
   ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
 }
 
-export function drawPageBorder(ctx, pagePxW) {
+export function drawPageBorder(ctx, pagePxW, { showCenterLine = true } = {}) {
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
   const mid = Math.round(pagePxW);
@@ -18,11 +18,13 @@ export function drawPageBorder(ctx, pagePxW) {
   ctx.strokeStyle = "#000";
   ctx.lineWidth = 1;
   ctx.strokeRect(0.5, 0.5, canvasWidth - 1, canvasHeight - 1);
-  ctx.setLineDash([1, 2]);
-  ctx.beginPath();
-  ctx.moveTo(mid + 0.5, 0);
-  ctx.lineTo(mid + 0.5, canvasHeight);
-  ctx.stroke();
+  if (showCenterLine) {
+    ctx.setLineDash([1, 2]);
+    ctx.beginPath();
+    ctx.moveTo(mid + 0.5, 0);
+    ctx.lineTo(mid + 0.5, canvasHeight);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 

@@ -999,6 +999,7 @@ export class WebGPUSpreadRenderer {
   #buildScene(pages, margins, effects, display, options) {
     const showPlaceholder = !!options.showPlaceholder;
     const previewZoom = Math.max(1, options.previewZoom || 1);
+    const showCenterLine = options.showCenterLine !== false;
     const hasPlacedPages = !!pages;
     const sideStates = buildSideStates(margins, pages, hasPlacedPages);
 
@@ -1020,6 +1021,7 @@ export class WebGPUSpreadRenderer {
       effects,
       display,
       showPlaceholder,
+      showCenterLine,
       previewZoom,
       sideStates,
     };
@@ -1377,6 +1379,7 @@ export class WebGPUSpreadRenderer {
       Math.round(scene.margins.pagePxH),
       scene.display.paperColor,
       scene.showPlaceholder ? "1" : "0",
+      scene.showCenterLine ? "1" : "0",
       scene.sideStates.left.page ? "p" : "e",
       scene.sideStates.right.page ? "p" : "e",
     ].join("|");
@@ -1388,7 +1391,7 @@ export class WebGPUSpreadRenderer {
     canvas.height = Math.round(scene.margins.pagePxH);
     const ctx = get2dContext(canvas);
 
-    drawPageBorder(ctx, scene.margins.pagePxW);
+    drawPageBorder(ctx, scene.margins.pagePxW, { showCenterLine: scene.showCenterLine });
     this.#markCanvasDirty(canvas);
     this.chromeCache.set(key, canvas);
     if (this.chromeCache.size > 16) {

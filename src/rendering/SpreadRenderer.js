@@ -43,14 +43,16 @@ export class SpreadRenderer {
     this.canvas.width = Math.round(2 * margins.pagePxW);
     this.canvas.height = Math.round(margins.pagePxH);
     this.ctx = get2dContext(this.canvas);
-    return this.#paint(this.canvas, pages, margins, effects, display);
+    this.showCenterLine = options.showCenterLine !== false;
+    return this.#paint(this.canvas, pages, margins, effects, display, options);
   }
 
   snapshot(pages, margins, effects, display, options = {}) {
     const offscreen = document.createElement("canvas");
     offscreen.width = Math.round(2 * margins.pagePxW);
     offscreen.height = Math.round(margins.pagePxH);
-    const result = this.#paint(offscreen, pages, margins, effects, display);
+    this.showCenterLine = options.showCenterLine !== false;
+    const result = this.#paint(offscreen, pages, margins, effects, display, options);
     return { canvas: offscreen, ...result };
   }
 
@@ -142,7 +144,7 @@ export class SpreadRenderer {
     }
   }
 
-  #paint(targetCanvas, pages, margins, effects, display) {
+  #paint(targetCanvas, pages, margins, effects, display, options = {}) {
     const ctx = get2dContext(targetCanvas);
     const hasPlacedPages = !!pages;
     const sideStates = this.#buildSideStates(margins, pages, hasPlacedPages);
@@ -176,7 +178,7 @@ export class SpreadRenderer {
       }
     }
 
-    drawPageBorder(ctx, margins.pagePxW);
+    drawPageBorder(ctx, margins.pagePxW, { showCenterLine: options.showCenterLine !== false });
 
     return {
       spreadRects: {
@@ -459,7 +461,7 @@ export class SpreadRenderer {
       }
     }
 
-    drawPageBorder(this.ctx, pageWidth);
+    drawPageBorder(this.ctx, pageWidth, { showCenterLine: this.showCenterLine !== false });
     this.animations = remaining;
 
     if (remaining.length) {
