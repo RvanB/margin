@@ -1,5 +1,4 @@
 import { drawPageBorder } from "./primitives.js";
-import { autoCrop } from "../effects/cpu.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins } from "./layout.js";
@@ -44,14 +43,14 @@ export class SpreadRenderer {
     this.canvas.width = Math.round(2 * margins.pagePxW);
     this.canvas.height = Math.round(margins.pagePxH);
     this.ctx = get2dContext(this.canvas);
-    return this.#paint(this.canvas, pages, margins, effects, display, options);
+    return this.#paint(this.canvas, pages, margins, effects, display);
   }
 
   snapshot(pages, margins, effects, display, options = {}) {
     const offscreen = document.createElement("canvas");
     offscreen.width = Math.round(2 * margins.pagePxW);
     offscreen.height = Math.round(margins.pagePxH);
-    const result = this.#paint(offscreen, pages, margins, effects, display, options);
+    const result = this.#paint(offscreen, pages, margins, effects, display);
     return { canvas: offscreen, ...result };
   }
 
@@ -157,9 +156,8 @@ export class SpreadRenderer {
     }
   }
 
-  #paint(targetCanvas, pages, margins, effects, display, options) {
+  #paint(targetCanvas, pages, margins, effects, display) {
     const ctx = get2dContext(targetCanvas);
-    const showPlaceholder = !!options.showPlaceholder;
     const hasPlacedPages = !!pages;
     const sideStates = this.#buildSideStates(margins, pages, hasPlacedPages);
 
@@ -172,7 +170,7 @@ export class SpreadRenderer {
         const effectEntry = effects[sideName];
         if (sideState.page) {
           sideState.drawnRect = !sideState.page.srcCanvas && sideState.page.placedPreviewCanvas
-            ? this.#drawPlacedPreview(ctx, sideState, effectEntry)
+            ? this.#drawPlacedPreview(ctx, sideState)
             : this.#drawPageContent(
                 ctx,
                 sideState.page,
@@ -297,7 +295,7 @@ export class SpreadRenderer {
     };
   }
 
-  #drawPlacedPreview(ctx, sideState, effectEntry) {
+  #drawPlacedPreview(ctx, sideState) {
     const previewCanvas = sideState.page?.placedPreviewCanvas;
     if (!previewCanvas) return null;
     const measurement = this.#measurePageContent(
@@ -365,12 +363,7 @@ export class SpreadRenderer {
     base.height = previewHeight;
     get2dContext(base, { willReadFrequently: true }).drawImage(sourceCanvas, 0, 0, previewWidth, previewHeight);
 
-    const out = applyEffectsToCanvas(
-      base,
-      effectEntry.effects ?? page.effects,
-      effectEntry.layerCache || null,
-      `${previewWidth}x${previewHeight}`
-    );
+    const out = applyEffectsToCanvas(base);
 
     pageCache.variants.set(cacheKey, out);
     if (pageCache.variants.size > 8) {
@@ -430,19 +423,8 @@ export class SpreadRenderer {
     };
   }
 
-  #getThumbnailCrop(page, sourceCanvas, effectEntry) {
+  #getThumbnailCrop(page, sourceCanvas) {
     if (!sourceCanvas) return { top: 0, left: 0, right: 0, bottom: 0 };
-    if (!page?.cropInitialized) {
-      const processedCanvas = this.#getProcessedCanvas(
-        page,
-        sourceCanvas.width,
-        sourceCanvas.height,
-        effectEntry,
-        sourceCanvas
-      );
-      return autoCrop(processedCanvas, page?.tolerance);
-    }
-
     return page.getCropFor(sourceCanvas);
   }
 

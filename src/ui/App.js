@@ -1,7 +1,6 @@
 import { Book } from "../model/Book.js";
-import { Page, makeDefaultPageEffects, normalizeFitAxis } from "../model/Page.js";
-import { autoCrop, getSelectionGate, normalizeHexColor, normalizeLevels } from "../effects/cpu.js";
-import { applyEffectsToCanvas, buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
+import { Page } from "../model/Page.js";
+import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { loadImagePreview } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
@@ -17,63 +16,12 @@ function cloneSet(set) {
   return new Set([...set]);
 }
 
-function formatSliderValue(value, suffix = "") {
-  const rounded = Math.round(value * 10) / 10;
-  const text = Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
-  return `${text}${suffix}`;
-}
 
 const CONTENT_ZOOM_MIN = 0.5;
 const CONTENT_ZOOM_MAX = 6;
 const CONTENT_ZOOM_STEP = 1.25;
 const MAX_RENDER_CANVAS_EDGE = 8192;
 const INTERACTIVE_PREVIEW_SCALE = 0.25;
-
-function formatMeasuredRgb({ r, g, b }) {
-  return `rgb ${r}, ${g}, ${b}`;
-}
-
-function getMeasuredHue(r, g, b) {
-  const rf = r / 255;
-  const gf = g / 255;
-  const bf = b / 255;
-  const max = Math.max(rf, gf, bf);
-  const min = Math.min(rf, gf, bf);
-  const delta = max - min;
-  if (delta <= 1e-6) return 0;
-
-  let hue;
-  if (max === rf) hue = ((gf - bf) / delta) % 6;
-  else if (max === gf) hue = (bf - rf) / delta + 2;
-  else hue = (rf - gf) / delta + 4;
-  return ((hue * 60) + 360) % 360;
-}
-
-function getMeasuredSaturation(r, g, b) {
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  return max === 0 ? 0 : ((max - min) / max) * 100;
-}
-
-function getMeasuredValue(r, g, b) {
-  return (Math.max(r, g, b) / 255) * 100;
-}
-
-function buildMeasuredColor(hex) {
-  const normalized = normalizeHexColor(hex) || "#ffffff";
-  const r = parseInt(normalized.slice(1, 3), 16);
-  const g = parseInt(normalized.slice(3, 5), 16);
-  const b = parseInt(normalized.slice(5, 7), 16);
-  return {
-    hex: normalized,
-    r,
-    g,
-    b,
-    hue: getMeasuredHue(r, g, b),
-    saturation: getMeasuredSaturation(r, g, b),
-    value: getMeasuredValue(r, g, b),
-  };
-}
 
 
 export class App {
@@ -109,7 +57,6 @@ export class App {
     this.dragHandle = null;
     this.contentEffectCaches = new WeakMap();
     this.dirtyPlacedPreviewPageIndexes = new Set();
-    this.measuredColor = buildMeasuredColor("#ffffff");
     this.contentZoom = 1;
     this.renderZoom = 1;
     this.previewRedrawTimer = 0;
@@ -118,6 +65,9 @@ export class App {
     this.previewLayoutKey = "";
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
+    this.panOrigin = null;
+    this.isPanning = false;
+    this.pendingCanvasClick = null;
     this.spreadRenderer = new rendererClass(spreadCanvas);
     globalThis.__rendererBackend = this.spreadRenderer.backendName;
     document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
@@ -248,10 +198,9 @@ export class App {
   getEffectEntry(page) {
     if (!page) return { pipeline: [], key: "" };
     return {
-      pipeline: buildPipeline(page.effects),
-      key: effectKey(page.effects),
-      effects: page.effects,
-      gpu: buildGpuEffectConfig(page.effects),
+      pipeline: buildPipeline(),
+      key: effectKey(),
+      gpu: buildGpuEffectConfig(),
       layerCache: this.uiState.appMode === "content" ? this.getContentEffectLayerCache(page) : null,
     };
   }
@@ -517,194 +466,8 @@ export class App {
       this.redraw();
     });
 
-    this.addListener("trim-slider", "input", () => {
-      for (const page of this.getSelectedPages()) this.applyTrimToPage(page);
-      this.redraw();
-    });
-
-    this.addListener("measure-color", "input", event => {
-      this.measuredColor = buildMeasuredColor(event.target.value);
-      this.setMeasuredColorUI(this.measuredColor);
-    });
-
-    const applySelectionFromUI = () => {
-      const selection = this.readSelectionUI();
-      const editingPage = this.getEditingPage();
-      const pages = this.getSelectedPages();
-      const touchedPages = [];
-      if (editingPage) {
-        this.applySelectionToPage(editingPage, selection);
-        this.recomputeTrimFromEffects(editingPage);
-        touchedPages.push(editingPage);
-      }
-      for (const page of pages) {
-        if (!page || page === editingPage) continue;
-        this.applySelectionToPage(page, selection);
-        this.recomputeTrimFromEffects(page);
-        touchedPages.push(page);
-      }
-      this.refreshAffectedThumbnails(touchedPages);
-      this.redraw();
-    };
-
-    const selectionControlIds = new Set([
-      "selection-sat-low",
-      "selection-sat-high",
-      "selection-hue-low",
-      "selection-hue-high",
-    ]);
-    const handleSelectionControlEvent = event => {
-      const control = event.target;
-      if (!control?.id) return;
-      const isNumericField = control.id.endsWith("-num");
-      const baseId = control.id.endsWith("-num") ? control.id.slice(0, -4) : control.id;
-      if (!selectionControlIds.has(baseId)) return;
-      if (control.value === "" || Number.isNaN(Number(control.value))) {
-        if (event.type === "change") this.setSelectionUI(this.getEditingPage()?.effects);
-        return;
-      }
-      this.setSelectionControlUI(baseId, control.value);
-      if (isNumericField && event.type === "input") return;
-      if (event.type === "input") this.beginInteractiveContentPreview();
-      else this.endInteractiveContentPreview({ redraw: false });
-      applySelectionFromUI();
-    };
-    this.addListener(this.toolbar, "input", handleSelectionControlEvent);
-    this.addListener(this.toolbar, "change", handleSelectionControlEvent);
-
-    this.addListener("bw-enabled", "change", event => {
-      const enabled = !!event.target.checked;
-      const pages = this.getSelectedPages();
-      for (const page of pages) {
-        this.applyBwEnabledToPage(page, enabled);
-        this.recomputeTrimFromEffects(page);
-      }
-      this.refreshAffectedThumbnails(this.getSelectedPages());
-      this.redraw();
-    });
-
-    this.addListener("neutralize-clear", "click", () => {
-      const pages = this.getSelectedPages();
-      for (const page of pages) {
-        this.applyNeutralizeColorToPage(page, null);
-        this.recomputeTrimFromEffects(page);
-      }
-      this.syncPageUI();
-      this.refreshAffectedThumbnails(pages);
-      this.redraw();
-    });
-
-    this.addListener("neutralize-color", "input", () => {
-      this.beginInteractiveContentPreview();
-      const color = document.getElementById("neutralize-color").value;
-      const pages = this.getSelectedPages();
-      for (const page of pages) {
-        this.applyNeutralizeColorToPage(page, color);
-        this.recomputeTrimFromEffects(page);
-      }
-      this.refreshAffectedThumbnails(pages);
-      this.redraw();
-    });
-
-    this.addListener("neutralize-color", "change", () => {
-      this.endInteractiveContentPreview({ redraw: false });
-      const color = document.getElementById("neutralize-color").value;
-      const pages = this.getSelectedPages();
-      for (const page of pages) {
-        this.applyNeutralizeColorToPage(page, color);
-        this.recomputeTrimFromEffects(page);
-      }
-      this.syncPageUI();
-      this.refreshAffectedThumbnails(pages);
-      this.redraw();
-    });
-
-    const readLevelsFromUI = changedId => {
-      const readLevelControl = id => {
-        const el = this.getToolbarControl(id);
-        if (!el) return NaN;
-        if ("valueAsNumber" in el && Number.isFinite(el.valueAsNumber)) return Math.round(el.valueAsNumber);
-        return parseInt(el.value, 10);
-      };
-      let black = readLevelControl("levels-black");
-      let gray = readLevelControl("levels-gray");
-      let white = readLevelControl("levels-white");
-
-      if (black >= white) {
-        if (changedId === "levels-white") black = Math.max(0, white - 1);
-        else white = Math.min(255, black + 1);
-      }
-
-      if (gray <= black) gray = black + 1;
-      if (gray >= white) gray = white - 1;
-
-      const levels = normalizeLevels(black, gray, white);
-      this.setLevelsUI(levels);
-      return levels;
-    };
-
-    const previewLevelsFromUI = changedId => {
-      const editingPage = this.getEditingPage();
-      if (editingPage) this.beginInteractiveContentPreview([editingPage]);
-      const levels = readLevelsFromUI(changedId);
-      this.applyLevelsToPage(editingPage, levels);
-      this.redraw();
-    };
-
-    const commitLevelsFromUI = changedId => {
-      this.endInteractiveContentPreview({ redraw: false });
-      const levels = readLevelsFromUI(changedId);
-      const pages = this.getSelectedPages();
-      for (const page of pages) {
-        this.applyLevelsToPage(page, levels);
-        this.recomputeTrimFromEffects(page);
-      }
-      this.refreshAffectedThumbnails(pages);
-      this.redraw();
-    };
-
-    const levelControlIds = new Set([
-      "levels-black",
-      "levels-gray",
-      "levels-white",
-    ]);
-    const handleLevelsControlEvent = event => {
-      const control = event.target;
-      if (!control?.id) return;
-      const isNumericField = control.id.endsWith("-num");
-      const baseId = control.id.endsWith("-num") ? control.id.slice(0, -4) : control.id;
-      if (!levelControlIds.has(baseId)) return;
-      if (control.value === "" || Number.isNaN(Number(control.value))) {
-        if (event.type === "change") {
-          const page = this.getEditingPage();
-          if (page) {
-            this.setLevelsUI({
-              black: page.effects.levelsBlack,
-              gray: page.effects.levelsGray,
-              white: page.effects.levelsWhite,
-            });
-          }
-        }
-        return;
-      }
-      this.setLevelsControlUI(baseId, control.value);
-      if (isNumericField && event.type === "input") return;
-      if (event.type === "input") previewLevelsFromUI(baseId);
-      else commitLevelsFromUI(baseId);
-    };
-    this.addListener(this.toolbar, "input", handleLevelsControlEvent);
-    this.addListener(this.toolbar, "change", handleLevelsControlEvent);
-
     this.addListener("cover-check", "change", event => {
       for (const page of this.getSelectedPages()) page.cover = event.target.checked;
-      this.refreshAffectedThumbnails(this.getSelectedPages());
-      this.syncPageUI();
-      this.redraw();
-    });
-
-    this.addListener("fit-axis", "change", event => {
-      const fitAxis = normalizeFitAxis(event.target.value);
-      for (const page of this.getSelectedPages()) page.fitAxis = fitAxis;
       this.refreshAffectedThumbnails(this.getSelectedPages());
       this.syncPageUI();
       this.redraw();
@@ -768,215 +531,18 @@ export class App {
   }
 
   syncPageUI() {
-    const section = this.getToolbarControl("trim-section");
+    const section = this.getToolbarControl("toolbar");
     if (section) section.style.display = "";
     const page = this.getEditingPage();
     if (!page) return;
 
-    this.setTrimUI(page.tolerance);
-    this.setSelectionUI(page.effects);
-    this.setBwUI(page.effects);
-    this.setNeutralizeUI(page.effects.neutralizeColor);
-    this.setLevelsUI({
-      black: page.effects.levelsBlack,
-      gray: page.effects.levelsGray,
-      white: page.effects.levelsWhite,
-    });
-    console.log("Selected page selection sync", {
-      pageIndex: this.uiState.editingPageIdx,
-      saved: {
-        saturationLow: page.effects.selectionSatLow,
-        saturationHigh: page.effects.selectionSatHigh,
-        hueLow: page.effects.selectionHueLow,
-        hueHigh: page.effects.selectionHueHigh,
-      },
-      ui: {
-        saturationLow: this.getToolbarControl("selection-sat-low")?.value,
-        saturationHigh: this.getToolbarControl("selection-sat-high")?.value,
-        hueLow: this.getToolbarControl("selection-hue-low")?.value,
-        hueHigh: this.getToolbarControl("selection-hue-high")?.value,
-      },
-    });
-
     const cover = this.getToolbarControl("cover-check");
     if (cover) cover.checked = page.cover;
-    const fitAxis = this.getToolbarControl("fit-axis");
-    if (fitAxis) {
-      fitAxis.value = normalizeFitAxis(page.fitAxis);
-      fitAxis.disabled = !!page.cover;
-    }
     const selectionCount = this.getToolbarControl("selection-count");
     if (selectionCount) {
       const count = this.uiState.selectedPageIdxs.size;
       selectionCount.textContent = count > 1 ? `${count} pages` : "";
     }
-    this.setMeasuredColorUI(this.measuredColor);
-  }
-
-  setTrimUI(tolerance) {
-    const slider = this.getToolbarControl("trim-slider");
-    const value = this.getToolbarControl("trim-val");
-    if (slider) slider.value = tolerance;
-    if (value) value.textContent = tolerance;
-  }
-
-  setSelectionUI(selection = {}) {
-    const mappings = [
-      ["selection-sat-low", selection.selectionSatLow],
-      ["selection-sat-high", selection.selectionSatHigh],
-      ["selection-hue-low", selection.selectionHueLow],
-      ["selection-hue-high", selection.selectionHueHigh],
-    ];
-    mappings.forEach(([id, value]) => {
-      this.setSelectionControlUI(id, value);
-    });
-  }
-
-  setSelectionControlUI(id, value) {
-    [id, `${id}-num`].forEach(controlId => {
-      const el = this.getToolbarControl(controlId);
-      if (!el) return;
-      const numericValue = Number(value);
-      if ("valueAsNumber" in el && Number.isFinite(numericValue)) {
-        el.valueAsNumber = numericValue;
-      } else {
-        el.value = String(value);
-      }
-    });
-  }
-
-  setMeasuredColorUI(sample = null) {
-    const picker = document.getElementById("measure-color");
-    if (picker) picker.value = sample?.hex || "#ffffff";
-
-    const mappings = [
-      ["measure-status", "reference"],
-      ["measure-hex", sample?.hex || "#ffffff"],
-      ["measure-rgb", sample ? formatMeasuredRgb(sample) : "rgb 255, 255, 255"],
-      ["measure-hue", sample ? formatSliderValue(sample.hue, "\u00b0") : "0\u00b0"],
-      ["measure-sat", sample ? formatSliderValue(sample.saturation, "%") : "0%"],
-      ["measure-value", sample ? formatSliderValue(sample.value, "%") : "100%"],
-    ];
-    mappings.forEach(([id, value]) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = String(value);
-    });
-  }
-
-  readSelectionUI() {
-    const readNumericControl = id => {
-      const el = this.getToolbarControl(id);
-      if (!el) return NaN;
-      if ("valueAsNumber" in el && Number.isFinite(el.valueAsNumber)) return el.valueAsNumber;
-      return parseFloat(el.value);
-    };
-    return {
-      selectionSatLow: readNumericControl("selection-sat-low"),
-      selectionSatHigh: readNumericControl("selection-sat-high"),
-      selectionHueLow: readNumericControl("selection-hue-low"),
-      selectionHueHigh: readNumericControl("selection-hue-high"),
-    };
-  }
-
-  setBwUI(effects = {}) {
-    const checkbox = this.getToolbarControl("bw-enabled");
-    if (checkbox) {
-      checkbox.checked = typeof effects.bwEnabled === "boolean"
-        ? effects.bwEnabled
-        : Math.max(0, Math.min(100, Math.round(effects.bwThreshold || 0))) > 0;
-    }
-  }
-
-  setNeutralizeUI(color) {
-    const normalized = normalizeHexColor(color);
-    const colorInput = this.getToolbarControl("neutralize-color");
-    const value = this.getToolbarControl("neutralize-val");
-    if (colorInput) colorInput.value = normalized || "#ffffff";
-    if (value) value.textContent = normalized || "none";
-  }
-
-  setLevelsUI({ black = 0, gray = 128, white = 255 } = {}) {
-    const levels = normalizeLevels(black, gray, white);
-    const mappings = [
-      ["levels-black", levels.black],
-      ["levels-gray", levels.gray],
-      ["levels-white", levels.white],
-    ];
-    mappings.forEach(([id, value]) => this.setLevelsControlUI(id, value));
-  }
-
-  setLevelsControlUI(id, value) {
-    [id, `${id}-num`].forEach(controlId => {
-      const el = this.getToolbarControl(controlId);
-      if (!el) return;
-      const numericValue = Number(value);
-      if ("valueAsNumber" in el && Number.isFinite(numericValue)) {
-        el.valueAsNumber = numericValue;
-      } else if ("value" in el) {
-        el.value = String(value);
-      } else {
-        el.textContent = String(value);
-      }
-    });
-  }
-
-  applyTrimToPage(page) {
-    if (!page) return;
-    const tolerance = parseInt(this.getToolbarControl("trim-slider")?.value, 10);
-    page.tolerance = tolerance;
-    this.recomputeTrimFromEffects(page, tolerance);
-    this.markPlacedPreviewDirty(page);
-    this.setTrimUI(tolerance);
-  }
-
-  recomputeTrimFromEffects(page, tolerance = page?.tolerance) {
-    if (!page) return;
-    const sourceCanvas = page.srcCanvas || page.previewCanvas || null;
-    if (sourceCanvas) {
-      page.setCropFor(sourceCanvas, autoCrop(
-        applyEffectsToCanvas(
-          sourceCanvas,
-          page.effects,
-          this.getContentEffectLayerCache(page),
-          `${sourceCanvas.width}x${sourceCanvas.height}`
-        ),
-        tolerance
-      ));
-      page.cropInitialized = true;
-      page.cropDirty = !page.srcCanvas;
-    } else {
-      page.cropInitialized = false;
-      page.cropDirty = true;
-    }
-  }
-
-  applySelectionToPage(page, selection) {
-    if (!page) return;
-    page.effects.selectionSatLow = selection.selectionSatLow;
-    page.effects.selectionSatHigh = selection.selectionSatHigh;
-    page.effects.selectionHueLow = selection.selectionHueLow;
-    page.effects.selectionHueHigh = selection.selectionHueHigh;
-    this.markPlacedPreviewDirty(page);
-  }
-
-  applyBwEnabledToPage(page, enabled = false) {
-    if (!page) return;
-    page.effects.bwEnabled = !!enabled;
-    this.markPlacedPreviewDirty(page);
-  }
-
-  applyNeutralizeColorToPage(page, color) {
-    if (!page) return;
-    page.effects.neutralizeColor = normalizeHexColor(color);
-    this.markPlacedPreviewDirty(page);
-  }
-
-  applyLevelsToPage(page, levels) {
-    if (!page) return;
-    page.effects.levelsBlack = levels.black;
-    page.effects.levelsGray = levels.gray;
-    page.effects.levelsWhite = levels.white;
-    this.markPlacedPreviewDirty(page);
   }
 
   getContentEffectLayerCache(page) {
@@ -1316,7 +882,7 @@ export class App {
           this.book.addPage(new Page({
             source: { type: "pdf", pdfDoc, pageNum: index + 1 },
             aspectRatio,
-            effects: makeDefaultPageEffects(),
+    
           }));
         });
         continue;
@@ -1328,13 +894,7 @@ export class App {
         previewCanvas: thumbnailSourceCanvas,
         thumbnailSourceCanvas,
         aspectRatio: width / height,
-        crop: autoCrop(applyEffectsToCanvas(thumbnailSourceCanvas, makeDefaultPageEffects()), 1),
-        cropSourceWidth: thumbnailSourceCanvas.width,
-        cropSourceHeight: thumbnailSourceCanvas.height,
-        cropInitialized: true,
-        cropDirty: true,
-        tolerance: 1,
-        effects: makeDefaultPageEffects(),
+
       }));
     }
 
@@ -1343,7 +903,6 @@ export class App {
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
     this.contentEffectCaches = new WeakMap();
-    this.measuredColor = buildMeasuredColor(this.measuredColor?.hex);
     this.overlayCanvas.style.visibility = "";
     this.uiState.currentSpread = 0;
     this.uiState.effectiveSpread = 0;
@@ -1380,7 +939,6 @@ export class App {
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
     this.contentEffectCaches = new WeakMap();
-    this.measuredColor = null;
     this.overlayCanvas.style.visibility = "";
     this.clearListeners();
     this.uiState.appMode = mode;
@@ -1411,6 +969,42 @@ export class App {
       this.appendFiles(event.dataTransfer.files);
     });
     document.addEventListener("keydown", event => this.handleKeyDown(event), true);
+    document.addEventListener("mousemove", event => {
+      if (this.isPanning && this.panOrigin) {
+        const dx = event.clientX - this.panOrigin.clientX;
+        const dy = event.clientY - this.panOrigin.clientY;
+        this.canvasArea.scrollLeft = this.panOrigin.scrollLeft - dx;
+        this.canvasArea.scrollTop = this.panOrigin.scrollTop - dy;
+      }
+    });
+    document.addEventListener("mouseup", () => {
+      if (this.isPanning) {
+        this.isPanning = false;
+        this.panOrigin = null;
+        this.pendingCanvasClick = null;
+        this.setCanvasCursor("default");
+      }
+    });
+    this.canvasArea.addEventListener("wheel", event => {
+      event.preventDefault();
+      const direction = event.deltaY < 0 ? 1 : -1;
+      const multiplier = direction > 0 ? CONTENT_ZOOM_STEP : 1 / CONTENT_ZOOM_STEP;
+      const nextZoom = Math.max(CONTENT_ZOOM_MIN, Math.min(CONTENT_ZOOM_MAX, this.contentZoom * multiplier));
+      if (Math.abs(nextZoom - this.contentZoom) < 0.0001) return;
+      const rect = this.canvasArea.getBoundingClientRect();
+      const offsetX = event.clientX - rect.left;
+      const offsetY = event.clientY - rect.top;
+      const contentX = this.canvasArea.scrollLeft + offsetX;
+      const contentY = this.canvasArea.scrollTop + offsetY;
+      const zoomRatio = nextZoom / this.contentZoom;
+      this.contentZoom = nextZoom;
+      this.syncCanvasStage();
+      requestAnimationFrame(() => {
+        this.canvasArea.scrollLeft = Math.max(0, contentX * zoomRatio - offsetX);
+        this.canvasArea.scrollTop = Math.max(0, contentY * zoomRatio - offsetY);
+      });
+      this.schedulePreviewRedraw();
+    }, { passive: false });
     document.querySelectorAll(".mode-tab").forEach(button =>
       button.addEventListener("click", () => this.switchMode(button.dataset.mode))
     );
@@ -1483,12 +1077,19 @@ export class App {
     this.endInteractiveContentPreview({ redraw: false });
     const { x, y } = this.getCanvasCoords(event);
 
+    this.panOrigin = {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      scrollLeft: this.canvasArea.scrollLeft,
+      scrollTop: this.canvasArea.scrollTop,
+    };
+    this.isPanning = false;
+    this.pendingCanvasClick = null;
+
     if (this.uiState.appMode === "layout") {
       const hit = this.getSpreadHitTarget(x, y);
       if (hit?.rect?.pageIndex >= 0) {
-        this.uiState.editingPageIdx = hit.rect.pageIndex;
-        this.uiState.selectedPageIdxs = new Set([hit.rect.pageIndex]);
-        this.switchMode("content");
+        this.pendingCanvasClick = { type: "layout-to-content", pageIndex: hit.rect.pageIndex };
       }
       return;
     }
@@ -1498,8 +1099,7 @@ export class App {
     const handleHit = this.getHandleHitTarget(x, y);
     const spreadHit = handleHit ?? this.getSpreadHitTarget(x, y);
     if (!spreadHit?.rect) {
-      this.flushDirtyPlacedPreviews();
-      this.switchMode("layout");
+      this.pendingCanvasClick = { type: "content-to-layout" };
       return;
     }
 
@@ -1528,6 +1128,21 @@ export class App {
   }
 
   handleCanvasMouseMove(event) {
+    if (this.panOrigin && !this.dragHandle) {
+      const dx = event.clientX - this.panOrigin.clientX;
+      const dy = event.clientY - this.panOrigin.clientY;
+      if (!this.isPanning && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) {
+        this.isPanning = true;
+        this.pendingCanvasClick = null;
+        this.setCanvasCursor("grabbing");
+      }
+      if (this.isPanning) {
+        this.canvasArea.scrollLeft = this.panOrigin.scrollLeft - dx;
+        this.canvasArea.scrollTop = this.panOrigin.scrollTop - dy;
+        return;
+      }
+    }
+
     if (this.spreadRenderer.isAnimating || this.uiState.appMode !== "content") return;
     const { x, y } = this.getCanvasCoords(event);
 
@@ -1566,15 +1181,40 @@ export class App {
   }
 
   handleCanvasMouseUp() {
+    const wasPanning = this.isPanning;
+    this.isPanning = false;
+    this.panOrigin = null;
+
     if (this.dragHandle) {
       const sideRect = this.uiState.spreadRects?.[this.dragHandle.side];
       if (sideRect?.pageIndex >= 0) this.refreshPlacedPreview(sideRect.pageIndex);
+      this.dragHandle = null;
+      if (!this.uiState.hoverHandle) this.setCanvasCursor("default");
+      return;
     }
-    this.dragHandle = null;
+
+    if (!wasPanning) {
+      const pending = this.pendingCanvasClick;
+      this.pendingCanvasClick = null;
+      if (pending?.type === "layout-to-content") {
+        this.uiState.editingPageIdx = pending.pageIndex;
+        this.uiState.selectedPageIdxs = new Set([pending.pageIndex]);
+        this.switchMode("content");
+      } else if (pending?.type === "content-to-layout") {
+        this.flushDirtyPlacedPreviews();
+        this.switchMode("layout");
+      }
+    }
+
+    this.pendingCanvasClick = null;
     if (!this.uiState.hoverHandle) this.setCanvasCursor("default");
   }
 
   handleCanvasMouseLeave() {
+    if (!this.isPanning) {
+      this.panOrigin = null;
+      this.pendingCanvasClick = null;
+    }
     this.dragHandle = null;
     if (this.uiState.hoverHandle) {
       this.uiState.hoverHandle = null;

@@ -1,18 +1,3 @@
-export function makeDefaultPageEffects() {
-  return {
-    bwThreshold: 0,
-    bwEnabled: false,
-    neutralizeColor: null,
-    selectionSatLow: 0,
-    selectionSatHigh: 100,
-    selectionHueLow: 0,
-    selectionHueHigh: 360,
-    levelsBlack: 0,
-    levelsGray: 128,
-    levelsWhite: 255,
-  };
-}
-
 function makeDefaultCrop() {
   return { top: 0, left: 0, right: 0, bottom: 0 };
 }
@@ -35,12 +20,8 @@ export class Page {
     crop = null,
     cropSourceWidth = 0,
     cropSourceHeight = 0,
-    cropInitialized = false,
-    cropDirty = false,
-    tolerance = 1,
     cover = false,
     fitAxis = "inside",
-    effects = null,
   } = {}) {
     this.source = source;
     this.srcCanvas = srcCanvas;
@@ -53,12 +34,8 @@ export class Page {
     this.crop = crop ? { ...makeDefaultCrop(), ...crop } : makeDefaultCrop();
     this.cropSourceWidth = cropSourceWidth;
     this.cropSourceHeight = cropSourceHeight;
-    this.cropInitialized = cropInitialized;
-    this.cropDirty = cropDirty;
-    this.tolerance = tolerance;
     this.cover = cover;
     this.fitAxis = normalizeFitAxis(fitAxis);
-    this.effects = effects ? { ...makeDefaultPageEffects(), ...effects } : makeDefaultPageEffects();
   }
 
   get displayCanvas() {
@@ -90,6 +67,5 @@ export class Page {
     this.crop = { ...makeDefaultCrop(), ...crop };
     this.cropSourceWidth = sourceCanvas?.width || 0;
     this.cropSourceHeight = sourceCanvas?.height || 0;
-    this.cropDirty = false;
   }
 }

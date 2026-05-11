@@ -1,5 +1,3 @@
-import { autoCrop } from "../effects/cpu.js";
-import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { loadImageFile } from "./imageLoader.js";
@@ -104,14 +102,6 @@ export class LazyPageLoader {
           page.source.pageNum,
           this.pdfPreviewSourceScale
         );
-        if (!page.cropInitialized || page.cropDirty) {
-          page.setCropFor(
-            previewSource,
-            autoCrop(applyEffectsToCanvas(previewSource, page.effects), page.tolerance)
-          );
-          page.cropInitialized = true;
-          page.cropDirty = true;
-        }
         const previewCanvas = await downscaleCanvasToMaxEdge(previewSource, this.pdfPreviewMaxEdge);
         page.previewCanvas = previewCanvas;
         if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewCanvas;
@@ -172,10 +162,6 @@ export class LazyPageLoader {
       page.loadedPdfRenderScale = renderScale;
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
-      if (!page.cropInitialized || page.cropDirty) {
-        page.setCropFor(canvas, autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance));
-        page.cropInitialized = true;
-      }
       this.onPageReady?.(pageIndex);
       this.#requestSpreadCleanupIfReady(pageIndex, requestedScale);
       if ((page.requestedPdfRenderScale || renderScale) > renderScale + 1e-3) {
@@ -203,10 +189,6 @@ export class LazyPageLoader {
       page.srcCanvas = canvas;
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
-      if (!page.cropInitialized || page.cropDirty) {
-        page.setCropFor(canvas, autoCrop(applyEffectsToCanvas(canvas, page.effects), page.tolerance));
-        page.cropInitialized = true;
-      }
       this.onPageReady?.(pageIndex);
     } catch (error) {
       page.loading = false;
