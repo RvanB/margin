@@ -2,11 +2,11 @@ import { Book } from "../model/Book.js";
 import { Page, normalizeFitAxis } from "../model/Page.js";
 import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
 import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
-import { loadImagePreview } from "../loading/imageLoader.js";
+import { loadImageFile, loadImagePreview } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
-import { getPdfPageAspectRatio, loadPdfDocument } from "../loading/pdfLoader.js";
+import { getPdfPageAspectRatio, loadPdfDocument, renderPdfPage } from "../loading/pdfLoader.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
-import { computeMargins, computeScale } from "../rendering/layout.js";
+import { computeMargins, computeScale, getPageGeometry } from "../rendering/layout.js";
 import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
 import { renderOverlay } from "../rendering/OverlayRenderer.js";
 import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
@@ -36,6 +36,15 @@ function normalizeCrop(crop) {
     right: Math.max(0, Math.round(parseNumber(crop?.right))),
     bottom: Math.max(0, Math.round(parseNumber(crop?.bottom))),
   };
+}
+
+function canvasToBlob(canvas, type = "image/png") {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob);
+      else reject(new Error("Failed to create image blob"));
+    }, type);
+  });
 }
 
 
@@ -83,6 +92,8 @@ export class App {
     this.renderZoom = 1;
     this.previewRedrawTimer = 0;
     this.interactivePreviewTimer = 0;
+    this.exportingPages = false;
+    this.exportProgress = { current: 0, total: 0, label: "" };
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.previewLayoutKey = "";
     this.animationCompletionScheduled = false;
@@ -153,6 +164,178 @@ export class App {
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  getPageSide(pageIndex) {
+    return pageIndex % 2 === 1 ? "left" : "right";
+  }
+
+  syncExportUI() {
+    document.body.dataset.exporting = this.exportingPages ? "true" : "false";
+    const overlay = document.getElementById("busy-overlay");
+    if (overlay) overlay.hidden = !this.exportingPages;
+    const status = document.getElementById("export-status");
+    const statusText = document.getElementById("export-status-text");
+    const progressFill = document.getElementById("export-progress-fill");
+    if (status) status.hidden = !this.exportingPages;
+    if (statusText) {
+      const { current, total, label } = this.exportProgress;
+      statusText.textContent = this.exportingPages
+        ? `${label}${total > 0 ? ` ${current} / ${total}` : ""}`
+        : "";
+    }
+    if (progressFill) {
+      const { current, total } = this.exportProgress;
+      const progress = total > 0 ? (current / total) * 100 : 0;
+      progressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+    }
+    const exportButton = document.getElementById("export-pages-btn");
+    if (exportButton) exportButton.disabled = this.exportingPages;
+  }
+
+  setExportProgress(label, current = 0, total = 0) {
+    this.exportProgress = { label, current, total };
+    this.syncExportUI();
+  }
+
+  getNativeExportScale(page, sourceCanvas, side) {
+    const margins = computeMargins(this.book.layout, 1);
+    const geometry = getPageGeometry(margins, side, page, 0);
+    const rect = geometry.contentRect;
+    const crop = page.getCropFor(sourceCanvas);
+    const sourceWidth = sourceCanvas.width - crop.left - crop.right;
+    const sourceHeight = sourceCanvas.height - crop.top - crop.bottom;
+    if (!rect?.w || !rect?.h || sourceWidth <= 0 || sourceHeight <= 0) return 1;
+    const minScale = 1 / Math.max(rect.w, rect.h, sourceWidth, sourceHeight, 1);
+
+    if (geometry.contentMode === "fill") {
+      return Math.max(minScale, Math.min(sourceWidth / rect.w, sourceHeight / rect.h));
+    }
+    if (geometry.contentMode === "fit-width") {
+      return Math.max(minScale, sourceWidth / rect.w);
+    }
+    if (geometry.contentMode === "fit-height") {
+      return Math.max(minScale, sourceHeight / rect.h);
+    }
+    return Math.max(minScale, sourceWidth / rect.w, sourceHeight / rect.h);
+  }
+
+  async getNativeExportSourceCanvas(page) {
+    if (page?.source?.type === "image" && page.source.file) {
+      return { canvas: await loadImageFile(page.source.file), temporary: true };
+    }
+    if (page?.source?.type === "pdf" && page.source.pdfDoc && page.source.pageNum) {
+      return { canvas: await renderPdfPage(page.source.pdfDoc, page.source.pageNum, 1), temporary: true };
+    }
+    return { canvas: page?.srcCanvas || page?.previewCanvas || null, temporary: false };
+  }
+
+  async renderNativeExportPage(pageIndex) {
+    const page = this.book.pages[pageIndex];
+    if (!page) return null;
+    const side = this.getPageSide(pageIndex);
+    const { canvas: sourceCanvas, temporary } = await this.getNativeExportSourceCanvas(page);
+    if (!sourceCanvas) return null;
+
+    try {
+      const exportScale = this.getNativeExportScale(page, sourceCanvas, side);
+      const margins = computeMargins(this.book.layout, exportScale);
+      const previewRenderer = typeof this.spreadRenderer.getPlacedPagePreview === "function"
+        ? this.spreadRenderer
+        : new SpreadRenderer(document.createElement("canvas"));
+      return previewRenderer.getPlacedPagePreview(
+        page,
+        this.getEffectEntry(page),
+        this.book.display,
+        {
+          sourceCanvas,
+          layout: this.book.layout,
+          side,
+          pageHeight: margins.pagePxH,
+        }
+      );
+    } finally {
+      if (temporary) {
+        sourceCanvas.width = 0;
+        sourceCanvas.height = 0;
+      }
+    }
+  }
+
+  async writeExportBlob(handle, name, blob) {
+    const fileHandle = await handle.getFileHandle(name, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(blob);
+    await writable.close();
+  }
+
+  downloadExportBlob(name, blob) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+
+  async exportAllPagesNative() {
+    if (this.exportingPages) return;
+    if (!this.book.pages.length) {
+      window.alert("Load pages before exporting.");
+      return;
+    }
+
+    this.exportingPages = true;
+    this.setExportProgress("Preparing export", 0, this.book.pages.length);
+    try {
+      let directoryHandle = null;
+      const zip = typeof globalThis.JSZip === "function" ? new globalThis.JSZip() : null;
+      if (typeof globalThis.showDirectoryPicker === "function") {
+        try {
+          this.setExportProgress("Choose export folder", 0, this.book.pages.length);
+          directoryHandle = await globalThis.showDirectoryPicker({ mode: "readwrite" });
+        } catch (error) {
+          if (error?.name === "AbortError") return;
+          console.error("Directory picker failed:", error);
+        }
+      }
+
+      for (let pageIndex = 0; pageIndex < this.book.pages.length; pageIndex += 1) {
+        this.setExportProgress("Rendering page", pageIndex, this.book.pages.length);
+        const exportCanvas = await this.renderNativeExportPage(pageIndex);
+        if (!exportCanvas) continue;
+        try {
+          const blob = await canvasToBlob(exportCanvas);
+          const fileName = `page-${String(pageIndex + 1).padStart(4, "0")}.png`;
+          if (directoryHandle) {
+            this.setExportProgress("Writing page", pageIndex + 1, this.book.pages.length);
+            await this.writeExportBlob(directoryHandle, fileName, blob);
+          } else {
+            if (!zip) throw new Error("JSZip unavailable");
+            zip.file(fileName, blob);
+            this.setExportProgress("Adding to ZIP", pageIndex + 1, this.book.pages.length);
+          }
+        } finally {
+          exportCanvas.width = 0;
+          exportCanvas.height = 0;
+        }
+      }
+
+      if (!directoryHandle && zip) {
+        this.setExportProgress("Building ZIP", this.book.pages.length, this.book.pages.length);
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        this.setExportProgress("Downloading ZIP", this.book.pages.length, this.book.pages.length);
+        this.downloadExportBlob("pages.zip", zipBlob);
+      }
+    } catch (error) {
+      console.error("Failed to export pages:", error);
+      window.alert("Could not export pages.");
+    } finally {
+      this.exportingPages = false;
+      this.setExportProgress("", 0, 0);
+    }
   }
 
   promptLoadProject() {
@@ -1126,6 +1309,7 @@ export class App {
   }
 
   switchMode(mode) {
+    if (this.exportingPages) return;
     if (mode === this.uiState.appMode) return;
     if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
     this.endInteractiveContentPreview({ redraw: false });
@@ -1157,12 +1341,16 @@ export class App {
     this.spreadCanvas.addEventListener("mouseleave", () => this.handleCanvasMouseLeave());
     document.getElementById("canvas-zoom-in")?.addEventListener("click", () => this.adjustContentZoom(1));
     document.getElementById("canvas-zoom-out")?.addEventListener("click", () => this.adjustContentZoom(-1));
+    document.getElementById("export-pages-btn")?.addEventListener("click", () => this.exportAllPagesNative());
     document.getElementById("save-project-btn")?.addEventListener("click", () => this.saveProject());
     document.getElementById("load-project-btn")?.addEventListener("click", () => this.promptLoadProject());
     document.getElementById("project-file-input")?.addEventListener("change", event => this.handleProjectFileInput(event));
-    document.addEventListener("dragover", event => event.preventDefault());
+    document.addEventListener("dragover", event => {
+      event.preventDefault();
+    });
     document.addEventListener("drop", event => {
       event.preventDefault();
+      if (this.exportingPages) return;
       this.appendFiles(event.dataTransfer.files);
     });
     document.addEventListener("keydown", event => this.handleKeyDown(event), true);
@@ -1183,6 +1371,10 @@ export class App {
       }
     });
     this.canvasArea.addEventListener("wheel", event => {
+      if (this.exportingPages) {
+        event.preventDefault();
+        return;
+      }
       event.preventDefault();
       const direction = event.deltaY < 0 ? 1 : -1;
       const multiplier = direction > 0 ? CONTENT_ZOOM_STEP : 1 / CONTENT_ZOOM_STEP;
@@ -1213,6 +1405,11 @@ export class App {
   }
 
   handleKeyDown(event) {
+    if (this.exportingPages) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.target.matches("input, select, textarea")) return;
     const key = typeof event.key === "string" ? event.key.toLowerCase() : event.key;
     const base = this.getEffectiveSpread();
@@ -1270,6 +1467,7 @@ export class App {
   }
 
   handleCanvasMouseDown(event) {
+    if (this.exportingPages) return;
     if (this.spreadRenderer.isAnimating) return;
     this.endInteractiveContentPreview({ redraw: false });
     const { x, y } = this.getCanvasCoords(event);
@@ -1325,6 +1523,7 @@ export class App {
   }
 
   handleCanvasMouseMove(event) {
+    if (this.exportingPages) return;
     if (this.panOrigin && !this.dragHandle) {
       const dx = event.clientX - this.panOrigin.clientX;
       const dy = event.clientY - this.panOrigin.clientY;
@@ -1378,6 +1577,7 @@ export class App {
   }
 
   handleCanvasMouseUp() {
+    if (this.exportingPages) return;
     const wasPanning = this.isPanning;
     this.isPanning = false;
     this.panOrigin = null;
@@ -1408,6 +1608,7 @@ export class App {
   }
 
   handleCanvasMouseLeave() {
+    if (this.exportingPages) return;
     if (!this.isPanning) {
       this.panOrigin = null;
       this.pendingCanvasClick = null;

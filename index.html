@@ -5,6 +5,7 @@
   <title>Margins</title>
   <link rel="stylesheet" href="margins.css">
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
 
@@ -16,9 +17,14 @@
       <button class="mode-tab" data-mode="content">Content</button>
     </div>
     <div id="project-controls">
+      <button id="export-pages-btn" type="button">Export pages</button>
       <button id="save-project-btn" type="button">Save project</button>
       <button id="load-project-btn" type="button">Load project</button>
       <input id="project-file-input" type="file" accept=".json,application/json" hidden>
+    </div>
+    <div id="export-status" aria-live="polite" hidden>
+      <div id="export-status-text"></div>
+      <div id="export-progress"><div id="export-progress-fill"></div></div>
     </div>
   </div>
 
@@ -42,6 +48,8 @@
   </div>
   <div id="page-strip"></div>
 </div>
+
+<div id="busy-overlay" hidden aria-hidden="true">Exporting…</div>
 
 <!-- ── Toolbar templates ───────────────────────────────────────────────────── -->
 
