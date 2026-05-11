@@ -130,7 +130,7 @@ async function downscaleCanvasWebgpu(sourceCanvas, targetWidth, targetHeight) {
   const sourceTexture = device.createTexture({
     size: [sourceWidth, sourceHeight, 1],
     format: "rgba8unorm",
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
   });
   const destTexture = device.createTexture({
     size: [targetWidth, targetHeight, 1],
