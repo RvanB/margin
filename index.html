@@ -16,12 +16,16 @@
     <details class="menu-dropdown">
       <summary>File</summary>
       <div class="menu-panel">
-        <button id="load-content-btn" type="button" class="menu-action">Load content</button>
+        <label id="load-content-btn" class="menu-action menu-file-action">
+          <span>Load content</span>
+          <input id="content-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple>
+        </label>
         <button id="export-pages-btn" type="button" class="menu-action">Export</button>
         <button id="save-project-btn" type="button" class="menu-action">Save settings</button>
-        <button id="load-project-btn" type="button" class="menu-action">Load settings</button>
-        <input id="content-file-input" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
-        <input id="project-file-input" type="file" accept=".json,application/json" hidden>
+        <label id="load-project-btn" class="menu-action menu-file-action">
+          <span>Load settings</span>
+          <input id="project-file-input" type="file" accept=".json,application/json">
+        </label>
       </div>
     </details>
     <details class="menu-dropdown">
@@ -45,6 +49,10 @@
         <label class="menu-check">
           <input type="checkbox" id="show-center-line" checked>
           <span>Show center line</span>
+        </label>
+        <label class="menu-check">
+          <input type="checkbox" id="dark-mode">
+          <span>Dark mode</span>
         </label>
         <label class="menu-check">
           <input type="checkbox" id="vdg">

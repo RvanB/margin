@@ -78,6 +78,7 @@ export class App {
       showMarginArrows: false,
       showLayoutContent: true,
       showCenterLine: true,
+      showDarkMode: false,
       showVdG: false,
     };
     this.layoutControlsState = {
@@ -116,11 +117,16 @@ export class App {
   init() {
     this.canvasWrap.dataset.mode = "layout";
     this.mountToolbar("layout");
+    this.syncDarkMode();
     this.applyVdGLayoutValues();
     this.syncBookLayoutFromInputs();
     this.initLayoutListeners();
     this.bindGlobalListeners();
     this.redraw();
+  }
+
+  syncDarkMode() {
+    document.documentElement.dataset.darkMode = this.uiState.showDarkMode ? "true" : "false";
   }
 
   buildProjectData() {
@@ -154,14 +160,10 @@ export class App {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
-  promptLoadContent() {
-    document.getElementById("content-file-input")?.click();
-  }
-
   async handleContentFileInput(event) {
-    const files = event.target.files;
+    const files = Array.from(event.target.files || []);
     event.target.value = "";
-    if (!files?.length) return;
+    if (!files.length) return;
     await this.appendFiles(files);
   }
 
@@ -198,6 +200,7 @@ export class App {
       "show-layout-content",
       "show-margin-arrows",
       "show-center-line",
+      "dark-mode",
       "vdg",
     ].forEach(id => {
       const control = document.getElementById(id);
@@ -224,8 +227,11 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const showCenterLine = document.getElementById("show-center-line");
     if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
+    const darkMode = document.getElementById("dark-mode");
+    if (darkMode) darkMode.checked = this.uiState.showDarkMode;
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
+    this.syncDarkMode();
     document.querySelectorAll(".mode-menu-item").forEach(button => {
       button.classList.toggle("active", button.dataset.mode === this.uiState.appMode);
     });
@@ -371,12 +377,8 @@ export class App {
     }
   }
 
-  promptLoadProject() {
-    document.getElementById("project-file-input")?.click();
-  }
-
   async handleProjectFileInput(event) {
-    const file = event.target.files?.[0];
+    const file = event.target.files?.[0] || null;
     event.target.value = "";
     if (!file) return;
     try {
@@ -724,6 +726,8 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const showCenterLine = document.getElementById("show-center-line");
     if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
+    const darkMode = document.getElementById("dark-mode");
+    if (darkMode) darkMode.checked = this.uiState.showDarkMode;
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
     this.syncInputs();
@@ -1310,10 +1314,6 @@ export class App {
     this.spreadCanvas.addEventListener("mouseleave", () => this.handleCanvasMouseLeave());
     document.getElementById("canvas-zoom-in")?.addEventListener("click", () => this.adjustContentZoom(1));
     document.getElementById("canvas-zoom-out")?.addEventListener("click", () => this.adjustContentZoom(-1));
-    document.getElementById("load-content-btn")?.addEventListener("click", () => {
-      this.closeOpenMenus();
-      this.promptLoadContent();
-    });
     document.getElementById("export-pages-btn")?.addEventListener("click", () => {
       this.closeOpenMenus();
       this.exportAllPagesNative();
@@ -1321,10 +1321,6 @@ export class App {
     document.getElementById("save-project-btn")?.addEventListener("click", () => {
       this.closeOpenMenus();
       this.saveProject();
-    });
-    document.getElementById("load-project-btn")?.addEventListener("click", () => {
-      this.closeOpenMenus();
-      this.promptLoadProject();
     });
     document.getElementById("content-file-input")?.addEventListener("change", event => this.handleContentFileInput(event));
     document.getElementById("project-file-input")?.addEventListener("change", event => this.handleProjectFileInput(event));
@@ -1348,6 +1344,11 @@ export class App {
       this.uiState.showCenterLine = event.target.checked;
       this.closeOpenMenus();
       this.redraw();
+    });
+    document.getElementById("dark-mode")?.addEventListener("change", event => {
+      this.uiState.showDarkMode = event.target.checked;
+      this.syncDarkMode();
+      this.closeOpenMenus();
     });
     document.getElementById("vdg")?.addEventListener("change", event => {
       this.uiState.showVdG = event.target.checked;
@@ -1391,30 +1392,6 @@ export class App {
         this.setCanvasCursor("default");
       }
     });
-    this.canvasArea.addEventListener("wheel", event => {
-      if (this.exportingPages) {
-        event.preventDefault();
-        return;
-      }
-      event.preventDefault();
-      const direction = event.deltaY < 0 ? 1 : -1;
-      const multiplier = direction > 0 ? CONTENT_ZOOM_STEP : 1 / CONTENT_ZOOM_STEP;
-      const nextZoom = Math.max(CONTENT_ZOOM_MIN, Math.min(CONTENT_ZOOM_MAX, this.contentZoom * multiplier));
-      if (Math.abs(nextZoom - this.contentZoom) < 0.0001) return;
-      const rect = this.canvasArea.getBoundingClientRect();
-      const offsetX = event.clientX - rect.left;
-      const offsetY = event.clientY - rect.top;
-      const contentX = this.canvasArea.scrollLeft + offsetX;
-      const contentY = this.canvasArea.scrollTop + offsetY;
-      const zoomRatio = nextZoom / this.contentZoom;
-      this.contentZoom = nextZoom;
-      this.syncCanvasStage();
-      requestAnimationFrame(() => {
-        this.canvasArea.scrollLeft = Math.max(0, contentX * zoomRatio - offsetX);
-        this.canvasArea.scrollTop = Math.max(0, contentY * zoomRatio - offsetY);
-      });
-      this.schedulePreviewRedraw();
-    }, { passive: false });
     this.resizeObserver = new ResizeObserver(() => {
       if (this.spreadRenderer.isAnimating) return;
       this.redraw();
