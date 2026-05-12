@@ -161,24 +161,22 @@ export class SpreadRenderer {
       for (const [sideName, sideState] of Object.entries(sideStates)) {
         const effectEntry = effects[sideName];
         if (sideState.page) {
-          sideState.drawnRect = !sideState.page.srcCanvas && sideState.page.placedPreviewCanvas
-            ? this.#drawPlacedPreview(ctx, sideState)
-            : this.#drawPageContent(
-                ctx,
-                sideState.page,
-                sideState.contentRect.x,
-                sideState.contentRect.y,
-                sideState.contentRect.w,
-                sideState.contentRect.h,
-                effectEntry,
-                display.contentBlendMode,
-                {
-                  mode: sideState.contentMode,
-                  clipToRect: sideState.clipContent,
-                  alignX: sideState.contentAlignX,
-                  alignY: sideState.contentAlignY,
-                }
-              );
+          sideState.drawnRect = this.#drawPageContent(
+            ctx,
+            sideState.page,
+            sideState.contentRect.x,
+            sideState.contentRect.y,
+            sideState.contentRect.w,
+            sideState.contentRect.h,
+            effectEntry,
+            display.contentBlendMode,
+            {
+              mode: sideState.contentMode,
+              clipToRect: sideState.clipContent,
+              alignX: sideState.contentAlignX,
+              alignY: sideState.contentAlignY,
+            }
+          );
         }
       }
     }

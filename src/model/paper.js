@@ -61,6 +61,15 @@ function darken(rgb, amount) {
 }
 
 function buildPaperAppearance(preset) {
+  if (preset.id === "bright-white") {
+    return {
+      paperColor: preset.paperColor,
+      lightShadowColor: "#ebebeb",
+      lightHighlightColor: "#ffffff",
+      shadowTintColor: "#f2f2f2",
+    };
+  }
+
   const paperRgb = hexToRgb(preset.paperColor);
   const scatterRgb = mixRgb(paperRgb, hexToRgb(preset.scatterColor), 0.68);
   const lightShadowRgb = darken(mixRgb(paperRgb, scatterRgb, 0.45), 0.08);

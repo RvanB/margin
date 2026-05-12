@@ -1307,9 +1307,6 @@ export class WebGPUSpreadRenderer {
 
   #getPageSurfaceCanvas(scene, sideState, side) {
     if (!sideState?.page) return null;
-    if (!sideState.page.srcCanvas && sideState.page.placedPreviewCanvas) {
-      return sideState.page.placedPreviewCanvas;
-    }
 
     const measurement = measurePageDraw(
       sideState.page,
