@@ -1058,7 +1058,7 @@ input[type="range"]::-moz-range-progress {
 
 .strip-thumb canvas {
   display: block;
-  border: 1px solid var(--ui-foreground);
+  /* border: 1px solid var(--ui-foreground); */
 }
 
 .strip-thumb span {
@@ -1070,7 +1070,7 @@ input[type="range"]::-moz-range-progress {
 
 .strip-thumb.in-spread span,
 .strip-thumb.selected span,
-.strip-thumb.active span { color: var(--ui-background); opacity: 1; }
+.strip-thumb.active span { color: var(--ui-foreground); opacity: 1; }
 
 .toolbar-mini-btn {
   font: inherit;

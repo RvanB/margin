@@ -1025,6 +1025,7 @@ export class WebGPUSpreadRenderer {
   #buildScene(pages, margins, effects, display, options) {
     const showPlaceholder = !!options.showPlaceholder;
     const previewZoom = Math.max(1, options.previewZoom || 1);
+    const showPageBorder = options.showPageBorder !== false;
     const showCenterLine = options.showCenterLine !== false;
     const hasPlacedPages = !!pages;
     const sideStates = buildSideStates(margins, pages, hasPlacedPages);
@@ -1048,6 +1049,7 @@ export class WebGPUSpreadRenderer {
       effects,
       display,
       showPlaceholder,
+      showPageBorder,
       showCenterLine,
       previewZoom,
       sideStates,
@@ -1413,6 +1415,7 @@ export class WebGPUSpreadRenderer {
       scene.display.paperColor,
       chromeColor,
       scene.showPlaceholder ? "1" : "0",
+      scene.showPageBorder ? "1" : "0",
       scene.showCenterLine ? "1" : "0",
       scene.sideStates.left.page ? "p" : "e",
       scene.sideStates.right.page ? "p" : "e",
@@ -1426,6 +1429,7 @@ export class WebGPUSpreadRenderer {
     const ctx = get2dContext(canvas);
 
     drawPageBorder(ctx, scene.margins.pagePxW, {
+      showBorder: scene.showPageBorder,
       showCenterLine: scene.showCenterLine,
       paperColor: scene.display.paperColor,
     });

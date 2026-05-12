@@ -135,6 +135,7 @@ export class App {
       spreadSideStates: null,
       showMarginArrows: false,
       showLayoutContent: true,
+      showPageBorder: true,
       showCenterLine: true,
       showVdG: false,
     };
@@ -271,6 +272,7 @@ export class App {
       "canvas-zoom-out",
       "show-layout-content",
       "show-margin-arrows",
+      "show-page-border",
       "show-center-line",
       "vdg",
     ].forEach(id => {
@@ -606,6 +608,8 @@ export class App {
     if (showMarginArrows) showMarginArrows.checked = this.uiState.showMarginArrows;
     const showLayoutContent = document.getElementById("show-layout-content");
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
+    const showPageBorder = document.getElementById("show-page-border");
+    if (showPageBorder) showPageBorder.checked = this.uiState.showPageBorder;
     const showCenterLine = document.getElementById("show-center-line");
     if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
     const vdg = document.getElementById("vdg");
@@ -1236,6 +1240,7 @@ export class App {
       {
         showPlaceholder: this.shouldShowPlaceholder(),
         previewZoom: this.renderZoom,
+        showPageBorder: this.uiState.showPageBorder,
         showCenterLine: this.uiState.showCenterLine,
       }
     );
@@ -1341,6 +1346,8 @@ export class App {
     if (showMarginArrows) showMarginArrows.checked = this.uiState.showMarginArrows;
     const showLayoutContent = document.getElementById("show-layout-content");
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
+    const showPageBorder = document.getElementById("show-page-border");
+    if (showPageBorder) showPageBorder.checked = this.uiState.showPageBorder;
     const showCenterLine = document.getElementById("show-center-line");
     if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
     const vdg = document.getElementById("vdg");
@@ -1679,6 +1686,7 @@ export class App {
       {
         showPlaceholder: this.shouldShowPlaceholder(),
         previewZoom: this.renderZoom,
+        showPageBorder: this.uiState.showPageBorder,
         showCenterLine: this.uiState.showCenterLine,
       }
     );
@@ -1825,6 +1833,7 @@ export class App {
       {
         showPlaceholder: this.shouldShowPlaceholder(),
         previewZoom: 1,
+        showPageBorder: this.uiState.showPageBorder,
         showCenterLine: this.uiState.showCenterLine,
       }
     );
@@ -2024,6 +2033,11 @@ export class App {
     });
     document.getElementById("show-margin-arrows")?.addEventListener("change", event => {
       this.uiState.showMarginArrows = event.target.checked;
+      this.closeOpenMenus();
+      this.redraw();
+    });
+    document.getElementById("show-page-border")?.addEventListener("change", event => {
+      this.uiState.showPageBorder = event.target.checked;
       this.closeOpenMenus();
       this.redraw();
     });

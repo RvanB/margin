@@ -63,7 +63,7 @@ function getPageChromeFillColor(paperColor) {
   return chrome === foreground ? background : foreground;
 }
 
-export function drawPageBorder(ctx, pagePxW, { showCenterLine = true, paperColor = null } = {}) {
+export function drawPageBorder(ctx, pagePxW, { showBorder = true, showCenterLine = true, paperColor = null } = {}) {
   const chromeColor = getPageChromeColor(paperColor);
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
@@ -71,7 +71,9 @@ export function drawPageBorder(ctx, pagePxW, { showCenterLine = true, paperColor
   ctx.save();
   ctx.strokeStyle = chromeColor;
   ctx.lineWidth = 1;
-  ctx.strokeRect(0.5, 0.5, canvasWidth - 1, canvasHeight - 1);
+  if (showBorder) {
+    ctx.strokeRect(0.5, 0.5, canvasWidth - 1, canvasHeight - 1);
+  }
   if (showCenterLine) {
     ctx.setLineDash([1, 2]);
     ctx.beginPath();
