@@ -76,6 +76,142 @@ function getPageChromeFillColor(paperColor) {
   return chrome === foreground ? background : foreground;
 }
 
+export function drawDirectionalLightFalloff(
+  ctx,
+  spreadRect,
+  { paperColor = null, shadowTintColor = null, lightBias = 0.32 } = {}
+) {
+  if (!spreadRect || spreadRect.w <= 0 || spreadRect.h <= 0) return;
+
+  const paper = hexToRgb(paperColor || "#ffffff", [1, 1, 1]);
+  const shadowTint = hexToRgb(shadowTintColor || paperColor || "#000000", [0, 0, 0]);
+  const darkness = Math.max(0, relativeLuminance(paper) - relativeLuminance(shadowTint));
+  const warmShade = mixRgb(shadowTint, [0.45, 0.32, 0.18], 0.55);
+  const peak = 0.16 + darkness * 0.1;
+  const lightCenter = Math.max(0, Math.min(1, lightBias));
+
+  const gradient = ctx.createLinearGradient(
+    spreadRect.x,
+    0,
+    spreadRect.x + spreadRect.w,
+    0
+  );
+  gradient.addColorStop(0, rgbToCss(warmShade, peak * 0.4 * lightCenter));
+  gradient.addColorStop(lightCenter, rgbToCss(warmShade, 0));
+  gradient.addColorStop(1, rgbToCss(warmShade, peak));
+
+  ctx.save();
+  ctx.globalCompositeOperation = "multiply";
+  ctx.fillStyle = gradient;
+  ctx.fillRect(
+    Math.round(spreadRect.x),
+    Math.round(spreadRect.y),
+    Math.round(spreadRect.w),
+    Math.round(spreadRect.h)
+  );
+  ctx.restore();
+}
+
+export function drawPageCurvatureLighting(
+  ctx,
+  pageRect,
+  side,
+  { paperColor = null, shadowTintColor = null } = {}
+) {
+  if (!pageRect || pageRect.w <= 0 || pageRect.h <= 0) return;
+
+  const paper = hexToRgb(paperColor || "#ffffff", [1, 1, 1]);
+  const shadowTint = hexToRgb(shadowTintColor || paperColor || "#000000", [0, 0, 0]);
+  const darkness = Math.max(0, relativeLuminance(paper) - relativeLuminance(shadowTint));
+  const warmShade = mixRgb(shadowTint, [0.55, 0.4, 0.22], 0.5);
+  const crackWarmShade = mixRgb(shadowTint, [0.88, 0.72, 0.08], 0.34);
+  const crackInnerShade = mixRgb(crackWarmShade, [0, 0, 0], 0.55);
+  const crackShade = mixRgb([0, 0, 0], [0.12, 0.08, 0.04], 0.22);
+
+  const isLeftPage = side === "left";
+  const hingeX = isLeftPage ? Math.round(pageRect.x + pageRect.w) : Math.round(pageRect.x);
+  const outerX = isLeftPage ? Math.round(pageRect.x) : Math.round(pageRect.x + pageRect.w);
+  const px = Math.round(pageRect.x);
+  const py = Math.round(pageRect.y);
+  const pw = Math.round(pageRect.w);
+  const ph = Math.round(pageRect.h);
+
+  const spineCrack = 0.72 + darkness * 0.22;
+  const spineSoft = 0.22 + darkness * 0.12;
+  const midShade = 0.02;
+  const outerPeak = 0.06 + darkness * 0.05;
+
+  const shadowGradient = ctx.createLinearGradient(hingeX, 0, outerX, 0);
+  shadowGradient.addColorStop(0.0, rgbToCss(warmShade, spineCrack));
+  shadowGradient.addColorStop(0.008, rgbToCss(warmShade, spineCrack * 0.74));
+  shadowGradient.addColorStop(0.032, rgbToCss(warmShade, spineSoft));
+  shadowGradient.addColorStop(0.15, rgbToCss(warmShade, spineSoft * 0.5));
+  shadowGradient.addColorStop(0.32, rgbToCss(warmShade, spineSoft * 0.2));
+  shadowGradient.addColorStop(0.5, rgbToCss(warmShade, midShade));
+  shadowGradient.addColorStop(0.75, rgbToCss(warmShade, midShade * 0.6));
+  shadowGradient.addColorStop(0.93, rgbToCss(warmShade, outerPeak * 0.75));
+  shadowGradient.addColorStop(1.0, rgbToCss(warmShade, outerPeak));
+
+  ctx.save();
+  ctx.globalCompositeOperation = "multiply";
+  ctx.fillStyle = shadowGradient;
+  ctx.fillRect(px, py, pw, ph);
+  const crackReach = Math.max(6, Math.round(pageRect.w * 0.018));
+  const crackOuterX = isLeftPage ? hingeX - crackReach : hingeX + crackReach;
+  const crackGradient = ctx.createLinearGradient(hingeX, 0, crackOuterX, 0);
+  crackGradient.addColorStop(0, rgbToCss(crackShade, Math.min(0.96, spineCrack + 0.12)));
+  crackGradient.addColorStop(0.08, rgbToCss(crackInnerShade, Math.min(0.9, spineCrack * 0.82)));
+  crackGradient.addColorStop(0.24, rgbToCss(crackWarmShade, Math.min(0.72, spineCrack * 0.56)));
+  crackGradient.addColorStop(0.55, rgbToCss(crackWarmShade, Math.min(0.34, spineSoft * 0.9)));
+  crackGradient.addColorStop(1, rgbToCss(crackWarmShade, 0));
+  ctx.fillStyle = crackGradient;
+  ctx.fillRect(
+    Math.min(hingeX, crackOuterX),
+    py,
+    Math.abs(crackOuterX - hingeX),
+    ph
+  );
+  ctx.restore();
+
+  const bouncePeak = 0.13;
+  const bounceColor = [1, 0.992, 0.96];
+  const bounceGradient = ctx.createLinearGradient(hingeX, 0, outerX, 0);
+  bounceGradient.addColorStop(0.0, rgbToCss(bounceColor, 0));
+  bounceGradient.addColorStop(0.3, rgbToCss(bounceColor, bouncePeak * 0.4));
+  bounceGradient.addColorStop(0.6, rgbToCss(bounceColor, bouncePeak));
+  bounceGradient.addColorStop(0.88, rgbToCss(bounceColor, bouncePeak * 0.45));
+  bounceGradient.addColorStop(1.0, rgbToCss(bounceColor, 0));
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.fillStyle = bounceGradient;
+  ctx.fillRect(px, py, pw, ph);
+  ctx.restore();
+
+  const yellowness = Math.max(0, 0.5 * (paper[0] + paper[1]) - paper[2]);
+  if (yellowness > 0.001) {
+    const scatterTint = [
+      Math.min(1, paper[0]),
+      Math.min(1, paper[1] * 0.97),
+      Math.max(0, paper[2] - yellowness * 1.6),
+    ];
+    const scatterPeak = Math.min(0.55, yellowness * 1.6);
+    const scatterGrad = ctx.createLinearGradient(hingeX, 0, outerX, 0);
+    scatterGrad.addColorStop(0.0, rgbToCss(scatterTint, scatterPeak));
+    scatterGrad.addColorStop(0.04, rgbToCss(scatterTint, scatterPeak * 0.7));
+    scatterGrad.addColorStop(0.12, rgbToCss(scatterTint, scatterPeak * 0.32));
+    scatterGrad.addColorStop(0.25, rgbToCss(scatterTint, scatterPeak * 0.08));
+    scatterGrad.addColorStop(0.4, rgbToCss(scatterTint, 0));
+    scatterGrad.addColorStop(1.0, rgbToCss(scatterTint, 0));
+
+    ctx.save();
+    ctx.globalCompositeOperation = "screen";
+    ctx.fillStyle = scatterGrad;
+    ctx.fillRect(px, py, pw, ph);
+    ctx.restore();
+  }
+}
+
 export function drawInsideEdgeShadow(
   ctx,
   pageRect,
@@ -89,20 +225,23 @@ export function drawInsideEdgeShadow(
   const darkness = Math.max(0, relativeLuminance(paper) - relativeLuminance(shadowTint));
   const edgeFactor = Math.max(0, Math.min(1, turnFactor));
   const reach = Math.max(14, Math.min(72, Math.round(pageRect.w * (0.065 + edgeFactor * 0.09))));
-  const warmOuter = mixRgb(shadowTint, [0, 0, 0], 0.18);
-  const warmCenter = mixRgb(shadowTint, [0, 0, 0], 0.52 + edgeFactor * 0.14);
+  const warmTint = mixRgb(shadowTint, [0.97, 0.84, 0.46], 0.52);
+  const crackWarmTint = mixRgb(shadowTint, [0.88, 0.72, 0.08], 0.34 + edgeFactor * 0.08);
+  const crackInnerTint = mixRgb(crackWarmTint, [0, 0, 0], 0.52);
+  const warmOuter = mixRgb(warmTint, [0, 0, 0], 0.22);
+  const warmCenter = mixRgb(warmTint, [0, 0, 0], 0.64 + edgeFactor * 0.14);
   const outerPeak = 0.08 + darkness * 0.08 + edgeFactor * 0.08;
-  const centerPeak = 0.28 + darkness * 0.12 + edgeFactor * 0.18;
+  const centerPeak = 0.38 + darkness * 0.14 + edgeFactor * 0.18;
   const hingeX = side === "left" ? Math.round(pageRect.x + pageRect.w) : Math.round(pageRect.x);
   const outerX = side === "left" ? hingeX - reach : hingeX + reach;
   const gradient = ctx.createLinearGradient(hingeX, 0, outerX, 0);
 
-  gradient.addColorStop(0, rgbToCss(warmCenter, centerPeak));
-  gradient.addColorStop(0.018, rgbToCss(warmCenter, centerPeak * 0.98));
-  gradient.addColorStop(0.045, rgbToCss(warmCenter, centerPeak * 0.46));
-  gradient.addColorStop(0.12, rgbToCss(warmOuter, outerPeak * 0.9));
-  gradient.addColorStop(0.28, rgbToCss(warmOuter, outerPeak * 0.56));
-  gradient.addColorStop(0.55, rgbToCss(warmOuter, outerPeak * 0.24));
+  gradient.addColorStop(0, rgbToCss(crackInnerTint, centerPeak));
+  gradient.addColorStop(0.05, rgbToCss(warmCenter, centerPeak * 0.82));
+  gradient.addColorStop(0.14, rgbToCss(crackWarmTint, centerPeak * 0.46));
+  gradient.addColorStop(0.28, rgbToCss(warmOuter, outerPeak * 0.9));
+  gradient.addColorStop(0.5, rgbToCss(warmOuter, outerPeak * 0.5));
+  gradient.addColorStop(0.72, rgbToCss(warmOuter, outerPeak * 0.2));
   gradient.addColorStop(1, rgbToCss(paper, 0));
 
   ctx.save();
@@ -114,7 +253,9 @@ export function drawInsideEdgeShadow(
     Math.abs(outerX - hingeX),
     Math.round(pageRect.h)
   );
-  ctx.fillStyle = rgbToCss(warmCenter, Math.min(0.9, centerPeak + 0.08));
+  ctx.fillStyle = rgbToCss(crackWarmTint, Math.min(0.92, centerPeak * 0.72));
+  ctx.fillRect(hingeX + (side === "left" ? -2 : 0), Math.round(pageRect.y), 2, Math.round(pageRect.h));
+  ctx.fillStyle = rgbToCss([0, 0, 0], Math.min(0.98, centerPeak + 0.16));
   ctx.fillRect(hingeX + (side === "left" ? -1 : 0), Math.round(pageRect.y), 1, Math.round(pageRect.h));
   ctx.restore();
 }

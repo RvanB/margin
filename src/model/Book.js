@@ -20,6 +20,7 @@ export class Book {
     const paperPreset = display?.paperPreset ?? getPaperPresetIdForColor(display?.paperColor);
     this.display = {
       contentBlendMode: "multiply",
+      paperThickness: 0.5,
       ...display,
     };
     applyPaperPreset(this.display, paperPreset);
@@ -41,14 +42,20 @@ export class Book {
   spreadPageEntries(spreadIndex) {
     const leftIndex = spreadIndex * 2 - 1;
     const rightIndex = spreadIndex * 2;
+    const leftShowThroughIndex = leftIndex - 1;
+    const rightShowThroughIndex = rightIndex + 1;
     return {
       left: {
         page: leftIndex >= 0 ? this.pages[leftIndex] ?? null : null,
         pageIndex: leftIndex,
+        showThroughPage: leftShowThroughIndex >= 0
+          ? this.pages[leftShowThroughIndex] ?? null
+          : null,
       },
       right: {
         page: this.pages[rightIndex] ?? null,
         pageIndex: rightIndex,
+        showThroughPage: this.pages[rightShowThroughIndex] ?? null,
       },
     };
   }

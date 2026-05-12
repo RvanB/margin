@@ -136,7 +136,6 @@ export class App {
       showMarginArrows: false,
       showLayoutContent: true,
       showPageBorder: true,
-      showCenterLine: true,
       showVdG: false,
     };
     this.layoutControlsState = {
@@ -199,6 +198,7 @@ export class App {
       display: {
         paperPreset: this.book.display.paperPreset,
         contentBlendMode: this.book.display.contentBlendMode,
+        paperThickness: this.book.display.paperThickness,
       },
       layoutControls: { ...this.layoutControlsState },
       pageCount: this.book.pages.length,
@@ -273,7 +273,6 @@ export class App {
       "show-layout-content",
       "show-margin-arrows",
       "show-page-border",
-      "show-center-line",
       "vdg",
     ].forEach(id => {
       const control = document.getElementById(id);
@@ -610,8 +609,8 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const showPageBorder = document.getElementById("show-page-border");
     if (showPageBorder) showPageBorder.checked = this.uiState.showPageBorder;
-    const showCenterLine = document.getElementById("show-center-line");
-    if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
+    const paperThickness = document.getElementById("paper-thickness");
+    if (paperThickness) paperThickness.value = String(this.book.display.paperThickness ?? 0.5);
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
     document.querySelectorAll(".mode-menu-item").forEach(button => {
@@ -1034,6 +1033,9 @@ export class App {
         : getPaperPresetIdForColor(display.paperColor);
       applyPaperPreset(this.book.display, presetId);
     }
+    if (typeof display.paperThickness === "number") {
+      this.book.display.paperThickness = Math.max(0, Math.min(1, display.paperThickness));
+    }
 
     const pageStates = Array.isArray(project.pages) ? project.pages : [];
     const appliedPageCount = Math.min(this.book.pages.length, pageStates.length);
@@ -1241,7 +1243,6 @@ export class App {
         showPlaceholder: this.shouldShowPlaceholder(),
         previewZoom: this.renderZoom,
         showPageBorder: this.uiState.showPageBorder,
-        showCenterLine: this.uiState.showCenterLine,
       }
     );
 
@@ -1348,8 +1349,6 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const showPageBorder = document.getElementById("show-page-border");
     if (showPageBorder) showPageBorder.checked = this.uiState.showPageBorder;
-    const showCenterLine = document.getElementById("show-center-line");
-    if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
     this.syncInputs();
@@ -1687,7 +1686,6 @@ export class App {
         showPlaceholder: this.shouldShowPlaceholder(),
         previewZoom: this.renderZoom,
         showPageBorder: this.uiState.showPageBorder,
-        showCenterLine: this.uiState.showCenterLine,
       }
     );
 
@@ -1835,7 +1833,6 @@ export class App {
         showPlaceholder: this.shouldShowPlaceholder(),
         previewZoom: 1,
         showPageBorder: this.uiState.showPageBorder,
-        showCenterLine: this.uiState.showCenterLine,
       }
     );
     const overlayCanvas = document.createElement("canvas");
@@ -2042,9 +2039,10 @@ export class App {
       this.closeOpenMenus();
       this.redraw();
     });
-    document.getElementById("show-center-line")?.addEventListener("change", event => {
-      this.uiState.showCenterLine = event.target.checked;
-      this.closeOpenMenus();
+    document.getElementById("paper-thickness")?.addEventListener("input", event => {
+      const value = Number(event.target.value);
+      if (!Number.isFinite(value)) return;
+      this.book.display.paperThickness = Math.max(0, Math.min(1, value));
       this.redraw();
     });
     document.getElementById("vdg")?.addEventListener("change", event => {

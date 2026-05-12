@@ -47,10 +47,6 @@
           <span>Show margin arrows</span>
         </label>
         <label class="menu-check">
-          <input type="checkbox" id="show-center-line" checked>
-          <span>Show center line</span>
-        </label>
-        <label class="menu-check">
           <input type="checkbox" id="show-page-border" checked>
           <span>Show page shadow</span>
         </label>
@@ -68,6 +64,10 @@
                 <div id="paper-color-list" class="menu-list"></div>
               </div>
             </details>
+            <div class="menu-list-item dim-row">
+              <label for="paper-thickness">Thickness</label>
+              <input type="range" id="paper-thickness" min="0" max="1" step="0.01" value="0.5">
+            </div>
           </div>
         </details>
       </div>

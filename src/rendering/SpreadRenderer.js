@@ -1,4 +1,6 @@
-import { drawInsideEdgeShadow } from "./primitives.js";
+import {
+  drawDirectionalLightFalloff,
+} from "./primitives.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins, getPageGeometry } from "./layout.js";
@@ -44,7 +46,6 @@ export class SpreadRenderer {
     this.canvas.height = Math.round(margins.pagePxH);
     this.ctx = get2dContext(this.canvas);
     this.showPageBorder = options.showPageBorder !== false;
-    this.showCenterLine = options.showCenterLine !== false;
     this.paperColor = display?.paperColor || null;
     this.shadowTintColor = display?.shadowTintColor || null;
     return this.#paint(this.canvas, pages, margins, effects, display, options);
@@ -55,7 +56,6 @@ export class SpreadRenderer {
     offscreen.width = Math.round(2 * margins.pagePxW);
     offscreen.height = Math.round(margins.pagePxH);
     this.showPageBorder = options.showPageBorder !== false;
-    this.showCenterLine = options.showCenterLine !== false;
     this.paperColor = display?.paperColor || null;
     this.shadowTintColor = display?.shadowTintColor || null;
     const result = this.#paint(offscreen, pages, margins, effects, display, options);
@@ -186,15 +186,14 @@ export class SpreadRenderer {
         }
       }
 
-      if (options.showCenterLine !== false) {
-        for (const [sideName, sideState] of Object.entries(sideStates)) {
-          if (!sideState.page) continue;
-          drawInsideEdgeShadow(ctx, sideState.pageRect, sideName, {
-            paperColor: display.paperColor,
-            shadowTintColor: display.shadowTintColor,
-          });
+      drawDirectionalLightFalloff(
+        ctx,
+        { x: 0, y: 0, w: margins.pagePxW * 2, h: margins.pagePxH },
+        {
+          paperColor: display.paperColor,
+          shadowTintColor: display.shadowTintColor,
         }
-      }
+      );
     }
 
     return {
