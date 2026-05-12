@@ -1,8 +1,5 @@
 import { Book } from "../model/Book.js";
-import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
-import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
-import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins } from "../rendering/layout.js";
 import { renderOverlay } from "../rendering/OverlayRenderer.js";
 import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
@@ -13,6 +10,8 @@ import { ExportController } from "./ExportController.js";
 import { InterfaceColors } from "./InterfaceColors.js";
 import { ModalManager } from "./ModalManager.js";
 import { NavigationController } from "./NavigationController.js";
+import { PlacedPreviewManager } from "./PlacedPreviewManager.js";
+import { SpreadComposer } from "./SpreadComposer.js";
 import { ToolbarController } from "./ToolbarController.js";
 import { ZoomController } from "./ZoomController.js";
 import {
@@ -28,11 +27,8 @@ import {
 import {
   clamp,
   cloneSet,
-  getSelectedPages,
   isProjectJsonFile,
 } from "../util/helpers.js";
-
-const INTERACTIVE_PREVIEW_SCALE = 0.25;
 
 
 export class App {
@@ -71,13 +67,9 @@ export class App {
       preserveRatio: false,
       ratioSameAsPage: true,
     };
-    this.contentEffectCaches = new WeakMap();
-    this.dirtyPlacedPreviewPageIndexes = new Set();
     this.previewRedrawTimer = 0;
-    this.interactivePreviewTimer = 0;
     this.busyIndicator = new BusyIndicator();
     this.lastMargins = computeMargins(this.book.layout, 1);
-    this.previewLayoutKey = "";
     this.spreadRenderer = new rendererClass(spreadCanvas);
     globalThis.__rendererBackend = this.spreadRenderer.backendName;
     document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
@@ -99,6 +91,8 @@ export class App {
     this.navigationController = new NavigationController(this);
     this.zoomController = new ZoomController(this);
     this.toolbarController = new ToolbarController(this);
+    this.spreadComposer = new SpreadComposer(this);
+    this.placedPreviewManager = new PlacedPreviewManager(this);
   }
 
   get contentZoom() {
@@ -107,6 +101,10 @@ export class App {
 
   get renderZoom() {
     return this.zoomController.renderZoom;
+  }
+
+  getEffectEntry(page) {
+    return this.spreadComposer.getEffectEntry(page);
   }
 
   init() {
@@ -157,17 +155,17 @@ export class App {
   }
 
   applyProjectData(project) {
-    if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
-    this.endInteractiveContentPreview({ redraw: false });
+    if (this.uiState.appMode === "content") this.placedPreviewManager.flushDirty();
+    this.placedPreviewManager.endInteractive({ redraw: false });
     this.navigationController.cancelQueuedSpreadTurns();
     this.spreadRenderer.stopAnimation();
     this.navigationController.resetAnimationState();
-    this.contentEffectCaches = new WeakMap();
+    this.spreadComposer.reset();
     this.overlayCanvas.style.visibility = "";
 
     const { layoutControlsState } = applyProjectDataToBook(this.book, project, {
       layoutControlsState: this.layoutControlsState,
-      onPageApplied: page => this.markPlacedPreviewDirty(page),
+      onPageApplied: page => this.placedPreviewManager.markDirty(page),
     });
     this.layoutControlsState = layoutControlsState;
 
@@ -184,9 +182,9 @@ export class App {
       this.uiState.selectedPageIdxs = new Set([this.uiState.editingPageIdx]);
     }
 
-    this.previewLayoutKey = this.getPlacedPreviewLayoutKey();
+    this.placedPreviewManager.rememberLayoutKey();
     this.pageStrip.invalidateAllThumbnails();
-    this.refreshAllPlacedPreviews();
+    this.placedPreviewManager.refreshAll();
     this.lazyPageLoader.reset();
     if (this.book.pages.length) {
       this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
@@ -198,80 +196,6 @@ export class App {
     else this.toolbarController.syncPageUI();
     this.redraw();
     this.schedulePreviewRedraw();
-  }
-
-  markPlacedPreviewDirty(pageOrIndex) {
-    const pageIndex = typeof pageOrIndex === "number"
-      ? pageOrIndex
-      : this.book.pages.indexOf(pageOrIndex);
-    if (pageIndex < 0) return;
-    this.dirtyPlacedPreviewPageIndexes.add(pageIndex);
-  }
-
-  flushDirtyPlacedPreviews() {
-    if (!this.dirtyPlacedPreviewPageIndexes.size) return;
-    const dirtyPageIndexes = [...this.dirtyPlacedPreviewPageIndexes];
-    this.dirtyPlacedPreviewPageIndexes.clear();
-    dirtyPageIndexes.forEach(pageIndex => this.refreshPlacedPreview(pageIndex));
-  }
-
-  getInteractivePreviewCanvas(page) {
-    if (!page) return null;
-    if (!page.srcCanvas) return page.previewCanvas || null;
-    const targetMaxEdge = Math.max(1, Math.round(Math.max(page.srcCanvas.width, page.srcCanvas.height) * INTERACTIVE_PREVIEW_SCALE));
-    if (
-      page.interactivePreviewCanvas &&
-      page.interactivePreviewSourceCanvas === page.srcCanvas &&
-      page.interactivePreviewMaxEdge === targetMaxEdge
-    ) {
-      return page.interactivePreviewCanvas;
-    }
-    const interactiveCanvas = downscaleCanvasToMaxEdgeSync(page.srcCanvas, targetMaxEdge) || page.previewCanvas || page.srcCanvas;
-    page.interactivePreviewCanvas = interactiveCanvas;
-    page.interactivePreviewSourceCanvas = page.srcCanvas;
-    page.interactivePreviewMaxEdge = targetMaxEdge;
-    return interactiveCanvas;
-  }
-
-  beginInteractiveContentPreview(pages = getSelectedPages(this.book, this.uiState), delay = 120) {
-    let activated = false;
-    for (const page of pages) {
-      const interactiveCanvas = this.getInteractivePreviewCanvas(page);
-      if (!interactiveCanvas) continue;
-      if (page.displayCanvasOverride === interactiveCanvas) continue;
-      page.displayCanvasOverride = interactiveCanvas;
-      activated = true;
-    }
-    if (!activated && !this.interactivePreviewTimer) return;
-    if (this.interactivePreviewTimer) clearTimeout(this.interactivePreviewTimer);
-    this.interactivePreviewTimer = setTimeout(() => {
-      this.interactivePreviewTimer = 0;
-      this.endInteractiveContentPreview();
-    }, delay);
-  }
-
-  endInteractiveContentPreview({ redraw = true } = {}) {
-    if (this.interactivePreviewTimer) {
-      clearTimeout(this.interactivePreviewTimer);
-      this.interactivePreviewTimer = 0;
-    }
-    let changed = false;
-    for (const page of this.book.pages) {
-      if (!page?.displayCanvasOverride) continue;
-      page.displayCanvasOverride = null;
-      changed = true;
-    }
-    if (changed && redraw) this.redraw();
-  }
-
-  getEffectEntry(page) {
-    if (!page) return { pipeline: [], key: "" };
-    return {
-      pipeline: buildPipeline(),
-      key: effectKey(),
-      gpu: buildGpuEffectConfig(),
-      layerCache: this.uiState.appMode === "content" ? this.getContentEffectLayerCache(page) : null,
-    };
   }
 
   redraw() {
@@ -300,7 +224,7 @@ export class App {
       });
     }
 
-    const spreadPages = this.getRenderableSpreadPages(this.uiState.currentSpread);
+    const spreadPages = this.spreadComposer.getRenderableSpreadPages(this.uiState.currentSpread);
 
     const renderResult = this.spreadRenderer.render(
       spreadPages,
@@ -311,7 +235,7 @@ export class App {
       },
       this.book.display,
       {
-        showPlaceholder: this.shouldShowPlaceholder(),
+        showPlaceholder: this.spreadComposer.shouldShowPlaceholder(),
         previewZoom: this.renderZoom,
         showPageBorder: this.uiState.showPageBorder,
       }
@@ -320,7 +244,7 @@ export class App {
     this.overlayCanvas.width = this.spreadCanvas.width;
     this.overlayCanvas.height = this.spreadCanvas.height;
     this.uiState.spreadSideStates = renderResult.sideStates;
-    this.uiState.spreadRects = this.shouldExposeSpreadRects() ? renderResult.spreadRects : null;
+    this.uiState.spreadRects = this.spreadComposer.shouldExposeSpreadRects() ? renderResult.spreadRects : null;
     this.zoomController.syncCanvasStage();
 
     if (!this.spreadRenderer.isAnimating) {
@@ -336,111 +260,12 @@ export class App {
     }, this.spreadRenderer);
   }
 
-  shouldExposeSpreadRects() {
-    if (!this.book.pages.length) return false;
-    if (this.uiState.appMode === "content") return true;
-    return this.uiState.showLayoutContent;
-  }
-
-  shouldShowPlaceholder() {
-    return this.uiState.appMode === "layout" && !this.book.pages.length && this.uiState.showLayoutContent;
-  }
-
-  getRenderableSpreadPages(spreadIndex) {
-    if (this.uiState.appMode === "layout" && (!this.uiState.showLayoutContent || !this.book.pages.length)) {
-      return null;
-    }
-    const pages = this.book.spreadPageEntries(spreadIndex);
-    return {
-      left: {
-        ...pages.left,
-        showThroughEffectEntry: pages.left.showThroughPage
-          ? this.getEffectEntry(pages.left.showThroughPage)
-          : { pipeline: [], key: "" },
-      },
-      right: {
-        ...pages.right,
-        showThroughEffectEntry: pages.right.showThroughPage
-          ? this.getEffectEntry(pages.right.showThroughPage)
-          : { pipeline: [], key: "" },
-      },
-    };
-  }
-
-
-  refreshAffectedThumbnails(pages) {
-    for (const page of pages) this.markPlacedPreviewDirty(page);
-  }
-
-  getPlacedPreviewLayoutKey() {
-    const { layout, display } = this.book;
-    return [
-      layout.pw,
-      layout.ph,
-      layout.ratio,
-      layout.b,
-      layout.mInner,
-      layout.mTop,
-      layout.mBottom,
-      display.paperColor,
-      display.contentBlendMode,
-    ].join("|");
-  }
-
-  refreshPlacedPreview(pageOrIndex) {
-    const pageIndex = typeof pageOrIndex === "number"
-      ? pageOrIndex
-      : this.book.pages.indexOf(pageOrIndex);
-    const page = this.book.pages[pageIndex];
-    if (!page) return;
-    const sourceCanvas = page.previewCanvas || page.thumbnailSourceCanvas || null;
-    if (!sourceCanvas) {
-      page.placedPreviewCanvas = null;
-      this.pageStrip.invalidateThumbnail(page);
-      return;
-    }
-    const previewRenderer = typeof this.spreadRenderer.getPlacedPagePreview === "function"
-      ? this.spreadRenderer
-      : new SpreadRenderer(document.createElement("canvas"));
-    page.placedPreviewCanvas = previewRenderer.getPlacedPagePreview(
-      page,
-      this.getEffectEntry(page),
-      this.book.display,
-      {
-        sourceCanvas,
-        layout: this.book.layout,
-        side: pageIndex % 2 === 1 ? "left" : "right",
-        pageHeight: SHARED_PREVIEW_SIZE,
-      }
-    );
-    this.dirtyPlacedPreviewPageIndexes.delete(pageIndex);
-    this.pageStrip.invalidateThumbnail(page);
-  }
-
-  refreshAllPlacedPreviews() {
-    this.book.pages.forEach((_, pageIndex) => this.refreshPlacedPreview(pageIndex));
-    this.pageStrip.invalidateAllThumbnails();
-  }
-
-  getContentEffectLayerCache(page) {
-    const sourceCanvas = page?.displayCanvas;
-    let cached = this.contentEffectCaches.get(page);
-    if (!cached || cached.srcCanvas !== sourceCanvas) {
-      cached = {
-        srcCanvas: sourceCanvas,
-        variants: new Map(),
-      };
-      this.contentEffectCaches.set(page, cached);
-    }
-    return cached.variants;
-  }
-
   handlePageStripClick(pageIndex, event) {
     const targetSpread = Math.floor((pageIndex + 1) / 2);
     if (this.uiState.appMode === "content") {
       if (event.metaKey || event.ctrlKey) {
-        this.endInteractiveContentPreview({ redraw: false });
-        this.flushDirtyPlacedPreviews();
+        this.placedPreviewManager.endInteractive({ redraw: false });
+        this.placedPreviewManager.flushDirty();
         if (this.uiState.selectedPageIdxs.has(pageIndex)) {
           this.uiState.selectedPageIdxs.delete(pageIndex);
           if (this.uiState.editingPageIdx === pageIndex) {
@@ -457,8 +282,8 @@ export class App {
       }
 
       if (event.shiftKey) {
-        this.endInteractiveContentPreview({ redraw: false });
-        this.flushDirtyPlacedPreviews();
+        this.placedPreviewManager.endInteractive({ redraw: false });
+        this.placedPreviewManager.flushDirty();
         const from = Math.min(this.uiState.editingPageIdx, pageIndex);
         const to = Math.max(this.uiState.editingPageIdx, pageIndex);
         for (let i = from; i <= to; i += 1) this.uiState.selectedPageIdxs.add(i);
@@ -468,8 +293,8 @@ export class App {
         return;
       }
 
-      this.endInteractiveContentPreview({ redraw: false });
-      this.flushDirtyPlacedPreviews();
+      this.placedPreviewManager.endInteractive({ redraw: false });
+      this.placedPreviewManager.flushDirty();
       this.uiState.editingPageIdx = pageIndex;
       this.uiState.selectedPageIdxs = new Set([pageIndex]);
       this.toolbarController.syncPageUI();
@@ -484,55 +309,6 @@ export class App {
       return;
     }
     this.navigationController.navigateTo(targetSpread, pageIndex);
-  }
-
-  createSpreadSnapshot(spreadIndex, scaleOverride = null) {
-    const margins = scaleOverride
-      ? computeMargins(this.book.layout, scaleOverride)
-      : computeMargins(
-          this.book.layout,
-          this.zoomController.getRenderScale()
-        );
-    const pages = this.getRenderableSpreadPages(spreadIndex);
-    const effectEntries = {
-      left: pages?.left?.page ? this.getEffectEntry(pages.left.page) : { pipeline: [], key: "" },
-      right: pages?.right?.page ? this.getEffectEntry(pages.right.page) : { pipeline: [], key: "" },
-    };
-    const { canvas: snapshot, sideStates } = this.spreadRenderer.snapshot(
-      pages,
-      margins,
-      effectEntries,
-      this.book.display,
-      {
-        showPlaceholder: this.shouldShowPlaceholder(),
-        previewZoom: this.renderZoom,
-        showPageBorder: this.uiState.showPageBorder,
-      }
-    );
-
-    if (this.uiState.appMode === "layout") {
-      const overlayCanvas = document.createElement("canvas");
-      overlayCanvas.width = snapshot.width;
-      overlayCanvas.height = snapshot.height;
-      const overlayCtx = overlayCanvas.getContext("2d");
-      renderOverlay(overlayCtx, margins, {
-        ...this.uiState,
-        spreadRects: null,
-        spreadSideStates: sideStates,
-      }, {
-        paperColor: this.book.display.paperColor,
-      });
-      const composite = document.createElement("canvas");
-      composite.width = snapshot.width;
-      composite.height = snapshot.height;
-      const compositeCtx = composite.getContext("2d");
-      compositeCtx.drawImage(snapshot, 0, 0);
-      compositeCtx.drawImage(overlayCanvas, 0, 0);
-      this.spreadRenderer.rememberSnapshotScene?.(composite, snapshot);
-      return composite;
-    }
-
-    return snapshot;
   }
 
   schedulePreviewRedraw() {
@@ -606,7 +382,7 @@ export class App {
       this.navigationController.cancelQueuedSpreadTurns();
       this.spreadRenderer.stopAnimation();
       this.navigationController.resetAnimationState();
-      this.contentEffectCaches = new WeakMap();
+      this.spreadComposer.reset();
       this.overlayCanvas.style.visibility = "";
       this.uiState.currentSpread = 0;
       this.uiState.effectiveSpread = 0;
@@ -614,7 +390,7 @@ export class App {
       this.uiState.selectedPageIdxs = this.book.pages.length ? new Set([0]) : new Set();
       this.pageStrip.invalidateAllThumbnails();
       this.pageStrip.scrollToStart();
-      this.refreshAllPlacedPreviews();
+      this.placedPreviewManager.refreshAll();
       this.lazyPageLoader.ensureSpreadLoaded(0, 1, { allowHighRes: false });
       this.lazyPageLoader.warmAllPreviews();
       if (projectFiles.length) {
@@ -636,7 +412,7 @@ export class App {
   onPageReady(pageIndex) {
     const page = this.book.pages[pageIndex];
     if (!page) return;
-    this.refreshPlacedPreview(pageIndex);
+    this.placedPreviewManager.refresh(pageIndex);
     this.pageStrip.updateThumbnail(pageIndex, page, this.spreadRenderer);
     if (this.spreadRenderer.isAnimating) return;
     const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
@@ -649,12 +425,12 @@ export class App {
   switchMode(mode) {
     if (this.busyIndicator.isExporting) return;
     if (mode === this.uiState.appMode) return;
-    if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
-    this.endInteractiveContentPreview({ redraw: false });
+    if (this.uiState.appMode === "content") this.placedPreviewManager.flushDirty();
+    this.placedPreviewManager.endInteractive({ redraw: false });
     this.navigationController.cancelQueuedSpreadTurns();
     this.spreadRenderer.stopAnimation();
     this.navigationController.resetAnimationState();
-    this.contentEffectCaches = new WeakMap();
+    this.spreadComposer.reset();
     this.overlayCanvas.style.visibility = "";
     this.toolbarController.clearListeners();
     this.uiState.appMode = mode;

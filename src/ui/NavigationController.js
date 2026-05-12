@@ -105,8 +105,8 @@ export class NavigationController {
       ? preferredPageIndex
       : (left.pageIndex >= 0 ? left.pageIndex : right.pageIndex);
     if (pageIndex < 0 || pageIndex >= app.book.pages.length) return;
-    app.endInteractiveContentPreview({ redraw: false });
-    app.flushDirtyPlacedPreviews();
+    app.placedPreviewManager.endInteractive({ redraw: false });
+    app.placedPreviewManager.flushDirty();
     app.uiState.editingPageIdx = pageIndex;
     app.uiState.selectedPageIdxs = new Set([pageIndex]);
     app.toolbarController.syncPageUI();
@@ -132,7 +132,7 @@ export class NavigationController {
     ];
     this.activeAnimationKeepSpreadIndexes = [...new Set(extraKeepSpreadIndexes)];
 
-    app.endInteractiveContentPreview({ redraw: false });
+    app.placedPreviewManager.endInteractive({ redraw: false });
     app.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, {
       allowHighRes: false,
       extraKeepSpreadIndexes,
@@ -157,8 +157,8 @@ export class NavigationController {
 
       app.uiState.effectiveSpread = clampedTarget;
       this.animationDirection = direction;
-      const fromCanvas = app.createSpreadSnapshot(fromSpread);
-      const toCanvas = app.createSpreadSnapshot(clampedTarget);
+      const fromCanvas = app.spreadComposer.createSpreadSnapshot(fromSpread);
+      const toCanvas = app.spreadComposer.createSpreadSnapshot(clampedTarget);
       app.overlayCanvas.style.visibility = "hidden";
 
       const onDone = this.animationCompletionScheduled

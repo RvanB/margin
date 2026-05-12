@@ -152,7 +152,7 @@ export class CanvasInteraction {
     const app = this.app;
     if (app.busyIndicator.isExporting) return;
     if (app.spreadRenderer.isAnimating) return;
-    app.endInteractiveContentPreview({ redraw: false });
+    app.placedPreviewManager.endInteractive({ redraw: false });
     const { x, y } = getCanvasCoords(app.spreadCanvas, event);
 
     this.panOrigin = {
@@ -183,7 +183,7 @@ export class CanvasInteraction {
 
     const pageIndex = spreadHit.rect.pageIndex;
     if (app.uiState.editingPageIdx !== pageIndex || app.uiState.selectedPageIdxs.size > 1) {
-      app.flushDirtyPlacedPreviews();
+      app.placedPreviewManager.flushDirty();
       app.uiState.editingPageIdx = pageIndex;
       app.uiState.selectedPageIdxs = new Set([pageIndex]);
       app.toolbarController.syncPageUI();
@@ -269,7 +269,7 @@ export class CanvasInteraction {
 
     if (this.dragHandle) {
       const sideRect = app.uiState.spreadRects?.[this.dragHandle.side];
-      if (sideRect?.pageIndex >= 0) app.refreshPlacedPreview(sideRect.pageIndex);
+      if (sideRect?.pageIndex >= 0) app.placedPreviewManager.refresh(sideRect.pageIndex);
       this.dragHandle = null;
       if (!app.uiState.hoverHandle) this.setCursor("default");
       return;
@@ -283,7 +283,7 @@ export class CanvasInteraction {
         app.uiState.selectedPageIdxs = new Set([pending.pageIndex]);
         app.switchMode("content");
       } else if (pending?.type === "content-to-layout") {
-        app.flushDirtyPlacedPreviews();
+        app.placedPreviewManager.flushDirty();
         app.switchMode("layout");
       }
     }

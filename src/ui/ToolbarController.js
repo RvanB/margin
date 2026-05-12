@@ -84,11 +84,7 @@ export class ToolbarController {
   setPaperPreset(presetId) {
     const app = this.app;
     applyPaperPreset(app.book.display, presetId);
-    const nextPreviewLayoutKey = app.getPlacedPreviewLayoutKey();
-    if (nextPreviewLayoutKey !== app.previewLayoutKey) {
-      app.previewLayoutKey = nextPreviewLayoutKey;
-      app.refreshAllPlacedPreviews();
-    } else {
+    if (!app.placedPreviewManager.refreshIfLayoutChanged()) {
       app.pageStrip.invalidateAllThumbnails();
     }
     this.syncMenuState();
@@ -152,11 +148,7 @@ export class ToolbarController {
     app.layoutControlsState.preserveRatio = !!document.getElementById("preserve-ratio")?.checked;
     app.layoutControlsState.ratioSameAsPage = !!document.getElementById("ratio-same-as-page")?.checked;
     app.uiState.showVdG = !!document.getElementById("vdg")?.checked;
-    const nextPreviewLayoutKey = app.getPlacedPreviewLayoutKey();
-    if (nextPreviewLayoutKey !== app.previewLayoutKey) {
-      app.previewLayoutKey = nextPreviewLayoutKey;
-      app.refreshAllPlacedPreviews();
-    }
+    app.placedPreviewManager.refreshIfLayoutChanged();
   }
 
   restoreLayoutInputs() {
@@ -260,7 +252,7 @@ export class ToolbarController {
     const applyToSelected = (mutate) => {
       const pages = getSelectedPages(app.book, app.uiState);
       for (const page of pages) mutate(page);
-      app.refreshAffectedThumbnails(pages);
+      app.placedPreviewManager.markPagesDirty(pages);
       this.syncPageUI();
       app.redraw();
     };
