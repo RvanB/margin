@@ -1279,7 +1279,21 @@ export class App {
     if (this.uiState.appMode === "layout" && (!this.uiState.showLayoutContent || !this.book.pages.length)) {
       return null;
     }
-    return this.book.spreadPageEntries(spreadIndex);
+    const pages = this.book.spreadPageEntries(spreadIndex);
+    return {
+      left: {
+        ...pages.left,
+        showThroughEffectEntry: pages.left.showThroughPage
+          ? this.getEffectEntry(pages.left.showThroughPage)
+          : { pipeline: [], key: "" },
+      },
+      right: {
+        ...pages.right,
+        showThroughEffectEntry: pages.right.showThroughPage
+          ? this.getEffectEntry(pages.right.showThroughPage)
+          : { pipeline: [], key: "" },
+      },
+    };
   }
 
   updateComputedRows(margins) {

@@ -76,6 +76,7 @@ function buildSideStates(margins, pages, hasPlacedPages) {
       page,
       pageIndex: entry?.pageIndex ?? -1,
       showThroughPage: entry?.showThroughPage ?? null,
+      showThroughEffectEntry: entry?.showThroughEffectEntry ?? { pipeline: [], key: "" },
       isBlank,
       ...geometry,
       overlayVisible: !isBlank && geometry.overlayVisible,
@@ -155,6 +156,19 @@ function measurePageDraw(page, rect, mode, alignX = "center", alignY = "center")
       sw: sourceCanvas.width,
       sh: sourceCanvas.height,
     },
+  };
+}
+
+function deriveLayoutFromMargins(margins) {
+  const b = Number(margins?.b) || 1;
+  return {
+    pw: Number(margins?.pw) || 0,
+    ph: Number(margins?.ph) || 0,
+    ratio: Number(margins?.ratio) || 0,
+    b,
+    mInner: (Number(margins?.inner) || 0) / b,
+    mTop: (Number(margins?.top) || 0) / b,
+    mBottom: (Number(margins?.bottom) || 0) / b,
   };
 }
 
@@ -359,6 +373,7 @@ export class WebGPUSpreadRenderer {
     this.ready = false;
     this.textureCache = new WeakMap();
     this.pageSurfaceCache = new WeakMap();
+    this.showThroughSurfaceCache = new WeakMap();
     this.sceneByCanvas = new WeakMap();
     this.chromeCache = new Map();
     this.pageGeometryCache = new Map();
@@ -912,8 +927,12 @@ export class WebGPUSpreadRenderer {
                 let hiddenSelected = matchesSelection(hiddenContent);
                 hiddenContent = applyBlackAndWhite(hiddenContent, hiddenSelected);
                 hiddenContent = applyLevels(hiddenContent, hiddenSelected);
-                let hiddenComposited = mix(paper, applyBlendMode(paper, hiddenContent), hiddenTexel.a);
-                let hiddenLin = srgbToLinear(hiddenComposited);
+                let hiddenTransmission = mix(
+                  vec3<f32>(1.0, 1.0, 1.0),
+                  min(vec3<f32>(1.0, 1.0, 1.0), hiddenContent),
+                  hiddenTexel.a
+                );
+                let hiddenLin = srgbToLinear(hiddenTransmission);
                 let transmittance = (1.0 - paperThickness) * (1.0 - paperThickness) * 0.45;
                 let directShaded = lit * lightTint * shadowTint * attenuation * bounce + scatter;
                 let withShowThrough = directShaded * mix(vec3<f32>(1.0, 1.0, 1.0), hiddenLin, transmittance);
@@ -1309,11 +1328,7 @@ export class WebGPUSpreadRenderer {
 
     const geometry = this.#getPageGeometry(sideState.pageRect.w, sideState.pageRect.h);
     const textureResource = this.#getTextureResource(pageSurface);
-    const showThroughPage = sideState.showThroughPage ?? null;
-    const showThroughCanvas = showThroughPage?.thumbnailCanvas
-      ?? showThroughPage?.previewCanvas
-      ?? showThroughPage?.displayCanvas
-      ?? this.emptyShowThroughCanvas;
+    const showThroughCanvas = this.#getShowThroughSurfaceCanvas(scene, sideState, side);
     const showThroughResource = this.#getTextureResource(showThroughCanvas);
     const gpuEffects = effectEntry?.gpu?.fragment || {
       neutralizeColor: null,
@@ -1488,6 +1503,70 @@ export class WebGPUSpreadRenderer {
     }
 
     this.#markCanvasDirty(surface);
+    return surface;
+  }
+
+  #getShowThroughSurfaceCanvas(scene, sideState, side) {
+    const showThroughPage = sideState.showThroughPage ?? null;
+    if (!showThroughPage) return this.emptyShowThroughCanvas;
+
+    const sourceCanvas = showThroughPage.displayCanvas
+      ?? showThroughPage.previewCanvas
+      ?? showThroughPage.srcCanvas;
+    if (!sourceCanvas) return this.emptyShowThroughCanvas;
+
+    const crop = showThroughPage.getCropFor(sourceCanvas);
+    const hiddenSide = side === "left" ? "right" : "left";
+    const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
+    const effectKey = sideState.showThroughEffectEntry?.key || "";
+    const drawKey = [
+      hiddenSide,
+      pageHeight,
+      Math.round(scene.margins.pagePxW),
+      Math.round(scene.margins.pagePxH),
+      crop.left,
+      crop.top,
+      crop.right,
+      crop.bottom,
+      showThroughPage.cover ? "1" : "0",
+      showThroughPage.spread ? "1" : "0",
+      showThroughPage.fitAxis || "",
+      showThroughPage.contentAlignX || "",
+      showThroughPage.contentAlignY || "",
+      effectKey,
+    ].join("|");
+
+    let pageCache = this.showThroughSurfaceCache.get(showThroughPage);
+    if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
+      pageCache = {
+        srcCanvas: sourceCanvas,
+        variants: new Map(),
+      };
+      this.showThroughSurfaceCache.set(showThroughPage, pageCache);
+    }
+
+    const cached = pageCache.variants.get(drawKey);
+    if (cached) return cached;
+
+    const surface = this.helperRenderer.getPlacedPagePreview(
+      showThroughPage,
+      sideState.showThroughEffectEntry,
+      scene.display,
+      {
+        sourceCanvas,
+        layout: deriveLayoutFromMargins(scene.margins),
+        side: hiddenSide,
+        pageHeight,
+        includePageColor: false,
+      }
+    );
+
+    this.#markCanvasDirty(surface);
+    pageCache.variants.set(drawKey, surface);
+    if (pageCache.variants.size > 8) {
+      const oldestKey = pageCache.variants.keys().next().value;
+      pageCache.variants.delete(oldestKey);
+    }
     return surface;
   }
 

@@ -74,8 +74,10 @@ export class SpreadRenderer {
     pageCanvas.width = pageWidth;
     pageCanvas.height = pageHeight;
     const pageCtx = get2dContext(pageCanvas, { willReadFrequently: true });
-    pageCtx.fillStyle = options.includePageColor !== false ? display.paperColor : "#ffffff";
-    pageCtx.fillRect(0, 0, pageWidth, pageHeight);
+    if (options.includePageColor !== false) {
+      pageCtx.fillStyle = display.paperColor;
+      pageCtx.fillRect(0, 0, pageWidth, pageHeight);
+    }
     const contentBlendMode = options.includePageColor !== false
       ? display.contentBlendMode
       : "source-over";
