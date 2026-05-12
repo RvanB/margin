@@ -54,6 +54,7 @@
           <input type="checkbox" id="vdg">
           <span>van de Graaf</span>
         </label>
+        <button id="interface-colors-btn" type="button" class="menu-action">Interface colors</button>
         <details class="menu-submenu">
           <summary class="menu-submenu-trigger">Paper</summary>
           <div class="menu-submenu-panel">
@@ -152,6 +153,24 @@
   </form>
 </template>
 
+<template id="tpl-interface-colors-modal">
+  <div class="modal-form">
+    <div class="modal-section">
+      <div class="modal-section-label">Interface</div>
+      <div class="modal-color-row">
+        <label for="interface-foreground-color">Foreground</label>
+        <input id="interface-foreground-color" class="modal-color-input" type="color">
+        <span id="interface-foreground-value" class="modal-color-value">#000000</span>
+      </div>
+      <div class="modal-color-row">
+        <label for="interface-background-color">Background</label>
+        <input id="interface-background-color" class="modal-color-input" type="color">
+        <span id="interface-background-value" class="modal-color-value">#ffffff</span>
+      </div>
+    </div>
+  </div>
+</template>
+
 <template id="tpl-layout">
   <div class="section">
     <div class="section-label">Page (inches)</div>
@@ -178,7 +197,7 @@
   <div class="section">
     <div class="section-label">Text block ratio (w/h)</div>
     <div class="dim-row">
-      <input type="number" id="ratio" step="0.001" min="0.1" max="2" value="0.543">
+      <input type="number" id="ratio" data-custom-slider="true" step="0.001" min="0.1" max="2" value="0.543">
     </div>
     <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:4px">
       <input type="checkbox" id="ratio-same-as-page">
@@ -188,41 +207,38 @@
 
   <div class="section">
     <div class="section-label">Back margin</div>
-    <div id="slider-header">
-      <span>b</span>
-      <span id="b-val">0.75 in</span>
+    <div class="dim-row">
+      <label>b</label>
+      <input type="number" id="b-input" data-custom-slider="true" data-slider-suffix=" in" step="0.01" min="0.1" max="1.5" value="0.75">
     </div>
-    <input type="range" id="b-slider" min="0.1" max="1.5" step="0.01" value="0.75">
-    <div class="slider-ends"><span>0.1</span><span>1.5</span></div>
   </div>
 
   <div class="section">
     <div class="section-label">Proportions (× b)</div>
     <div class="dim-row">
       <label>inner</label>
-      <input type="number" id="m-inner" step="0.05" min="0.1" value="1">
+      <input type="number" id="m-inner" data-custom-slider="true" data-slider-max="6" step="0.05" min="0.1" value="1">
     </div>
     <div class="dim-row">
       <label>top</label>
-      <input type="number" id="m-top" step="0.05" min="0.1" value="1.5">
+      <input type="number" id="m-top" data-custom-slider="true" data-slider-max="6" step="0.05" min="0.1" value="1.5">
     </div>
     <div class="dim-row">
       <label>bottom</label>
-      <input type="number" id="m-bottom" step="0.05" min="0.1" value="2.5">
+      <input type="number" id="m-bottom" data-custom-slider="true" data-slider-max="6" step="0.05" min="0.1" value="2.5">
     </div>
   </div>
 
   <div class="section">
     <div style="display:flex;align-items:center;justify-content:space-between">
       <div class="section-label" style="margin:0">van de Graaf</div>
-      <button id="vdg-snap" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:1px solid #000;padding:2px 6px;cursor:pointer">Apply</button>
+      <button id="vdg-snap" class="toolbar-mini-btn">Apply</button>
     </div>
   </div>
 
   <div class="section">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
       <div class="section-label" style="margin:0">Computed</div>
-      <button id="print-btn" style="font-family:inherit;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;background:none;border:none;cursor:pointer;padding:0">Print</button>
     </div>
     <div class="computed-row"><span>inner</span><span id="c-inner">—</span></div>
     <div class="computed-row"><span>top</span><span id="c-top">—</span></div>

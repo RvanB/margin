@@ -30,6 +30,15 @@ function parseNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeHexColor(value, fallback) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (/^#[0-9a-f]{6}$/.test(normalized)) return normalized;
+  if (/^#[0-9a-f]{3}$/.test(normalized)) {
+    return `#${normalized.slice(1).split("").map(char => char + char).join("")}`;
+  }
+  return fallback;
+}
+
 function isProjectJsonFile(file) {
   return !!file && (
     file.type === "application/json"
@@ -111,6 +120,10 @@ export class App {
     this.toolbar = document.getElementById("toolbar");
     this.modalHost = document.getElementById("app-modal");
     this.book = new Book();
+    this.interfaceColors = {
+      foreground: "#000000",
+      background: "#ffffff",
+    };
     this.uiState = {
       appMode: "layout",
       currentSpread: 0,
@@ -166,6 +179,7 @@ export class App {
   }
 
   init() {
+    this.applyInterfaceColors();
     this.canvasWrap.dataset.mode = "layout";
     this.mountToolbar("layout");
     this.populatePaperPresetMenu();
@@ -252,6 +266,7 @@ export class App {
       "export-pages-btn",
       "save-project-btn",
       "load-project-btn",
+      "interface-colors-btn",
       "canvas-zoom-in",
       "canvas-zoom-out",
       "show-layout-content",
@@ -298,6 +313,7 @@ export class App {
     shell.querySelector(".modal-title").textContent = title || "";
     const content = shell.querySelector(".modal-content");
     content.appendChild(bodyTemplate.content.cloneNode(true));
+    this.enhanceNumberInputs(content);
     this.modalHost.appendChild(shell);
 
     const controller = new AbortController();
@@ -322,6 +338,258 @@ export class App {
 
   closeOpenMenus() {
     document.querySelectorAll(".menu-dropdown[open], .menu-submenu[open]").forEach(menu => menu.removeAttribute("open"));
+  }
+
+  applyInterfaceColors() {
+    const rootStyle = document.documentElement.style;
+    const foreground = normalizeHexColor(this.interfaceColors.foreground, "#000000");
+    const background = normalizeHexColor(this.interfaceColors.background, "#ffffff");
+    this.interfaceColors = { foreground, background };
+    rootStyle.setProperty("--ui-foreground", foreground);
+    rootStyle.setProperty("--ui-background", background);
+  }
+
+  setInterfaceColors(nextColors = {}) {
+    this.interfaceColors = {
+      foreground: normalizeHexColor(nextColors.foreground, this.interfaceColors.foreground),
+      background: normalizeHexColor(nextColors.background, this.interfaceColors.background),
+    };
+    this.applyInterfaceColors();
+  }
+
+  showInterfaceColorsModal() {
+    this.showModal({
+      title: "Interface colors",
+      templateId: "tpl-interface-colors-modal",
+      onOpen: ({ content, signal }) => {
+        const foregroundInput = content.querySelector("#interface-foreground-color");
+        const backgroundInput = content.querySelector("#interface-background-color");
+        const foregroundValue = content.querySelector("#interface-foreground-value");
+        const backgroundValue = content.querySelector("#interface-background-value");
+        if (!foregroundInput || !backgroundInput || !foregroundValue || !backgroundValue) return;
+
+        const sync = () => {
+          foregroundInput.value = this.interfaceColors.foreground;
+          backgroundInput.value = this.interfaceColors.background;
+          foregroundValue.textContent = this.interfaceColors.foreground;
+          backgroundValue.textContent = this.interfaceColors.background;
+        };
+
+        foregroundInput.addEventListener("input", () => {
+          this.setInterfaceColors({ foreground: foregroundInput.value });
+          sync();
+        }, { signal });
+        backgroundInput.addEventListener("input", () => {
+          this.setInterfaceColors({ background: backgroundInput.value });
+          sync();
+        }, { signal });
+
+        sync();
+      },
+    });
+  }
+
+  getNumberInputPrecision(input) {
+    const step = String(input?.step || "");
+    if (!step.includes(".")) return 0;
+    return step.split(".")[1].length;
+  }
+
+  formatNumberInputValue(input, value) {
+    const numeric = parseNumber(value, 0);
+    const precision = this.getNumberInputPrecision(input);
+    return precision > 0 ? numeric.toFixed(precision) : String(Math.round(numeric));
+  }
+
+  getCustomSliderBounds(input) {
+    const min = parseNumber(input.min, 0);
+    const step = parseNumber(input.step, 1) || 1;
+    const value = parseNumber(input.value, min);
+    const explicitMax = input.max === "" ? NaN : parseNumber(input.max, NaN);
+    const sliderMax = parseNumber(input.dataset.sliderMax, NaN);
+    let max = Number.isFinite(explicitMax)
+      ? explicitMax
+      : Number.isFinite(sliderMax)
+        ? sliderMax
+        : Math.max(min + step * 100, value);
+    if (value > max) max = value;
+    return { min, max, step, value };
+  }
+
+  setNumberInputValue(input, value, { emitChange = false } = {}) {
+    if (!input) return;
+    const min = input.min === "" ? -Infinity : parseNumber(input.min, -Infinity);
+    const max = input.max === "" ? Infinity : parseNumber(input.max, Infinity);
+    const numeric = Math.max(min, Math.min(max, parseNumber(value, parseNumber(input.value, min || 0))));
+    input.value = this.formatNumberInputValue(input, numeric);
+    this.updateCustomSliderControl(input);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    if (emitChange) input.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  formatCustomSliderValue(input, value = parseNumber(input?.value, 0)) {
+    return `${this.formatNumberInputValue(input, value)}${input?.dataset?.sliderSuffix || ""}`;
+  }
+
+  openCustomSliderEditor(input) {
+    const ui = input?._customSliderUi;
+    if (!ui || input.disabled) return;
+    ui.valueButton.hidden = true;
+    ui.valueEditor.hidden = false;
+    ui.valueEditor.value = input.value;
+    ui.valueEditor.focus();
+    ui.valueEditor.select();
+  }
+
+  closeCustomSliderEditor(input, { commit = false } = {}) {
+    const ui = input?._customSliderUi;
+    if (!ui) return;
+    if (commit && ui.valueEditor.value !== "") {
+      this.setNumberInputValue(input, ui.valueEditor.value, { emitChange: true });
+    }
+    ui.valueEditor.hidden = true;
+    ui.valueButton.hidden = false;
+    this.updateCustomSliderControl(input);
+  }
+
+  updateCustomSliderControl(input) {
+    const ui = input?._customSliderUi;
+    if (!ui) return;
+    const { min, max, step, value } = this.getCustomSliderBounds(input);
+    const percent = max > min ? (value - min) / (max - min) : 0;
+    ui.control.style.setProperty("--slider-percent", `${Math.max(0, Math.min(1, percent))}`);
+    ui.range.min = String(min);
+    ui.range.max = String(max);
+    ui.range.step = String(step);
+    ui.range.value = this.formatNumberInputValue(input, value);
+    if (!ui.valueEditor.hidden) ui.valueEditor.value = this.formatNumberInputValue(input, value);
+    ui.valueButton.textContent = this.formatCustomSliderValue(input, value);
+    ui.range.disabled = !!input.disabled;
+    ui.valueButton.disabled = !!input.disabled;
+    ui.minusButton.disabled = !!input.disabled;
+    ui.plusButton.disabled = !!input.disabled;
+    ui.valueEditor.disabled = !!input.disabled;
+    ui.control.classList.toggle("disabled", !!input.disabled);
+  }
+
+  refreshCustomSliderControls(scope = this.toolbar) {
+    if (!scope) return;
+    scope.querySelectorAll('input[type="number"][data-custom-slider="true"]').forEach(input => {
+      this.updateCustomSliderControl(input);
+    });
+  }
+
+  enhanceCustomSliderInputs(scope) {
+    if (!scope) return;
+    scope.querySelectorAll('input[type="number"][data-custom-slider="true"]').forEach(input => {
+      if (input.dataset.customSliderEnhanced === "true") {
+        this.updateCustomSliderControl(input);
+        return;
+      }
+      input.dataset.customSliderEnhanced = "true";
+      input.hidden = true;
+      input.classList.add("custom-slider-source");
+
+      const control = document.createElement("div");
+      control.className = "custom-slider-control";
+      input.parentNode?.insertBefore(control, input);
+      control.appendChild(input);
+
+      const createNudgeButton = (direction, label) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `custom-slider-nudge custom-slider-nudge-${direction > 0 ? "plus" : "minus"}`;
+        button.textContent = label;
+        button.addEventListener("mousedown", event => event.preventDefault());
+        button.addEventListener("click", () => {
+          if (input.disabled) return;
+          if (direction > 0) input.stepUp();
+          else input.stepDown();
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          this.updateCustomSliderControl(input);
+        });
+        return button;
+      };
+
+      const minusButton = createNudgeButton(-1, "-");
+      const plusButton = createNudgeButton(1, "+");
+      const main = document.createElement("div");
+      main.className = "custom-slider-main";
+      const range = document.createElement("input");
+      range.type = "range";
+      range.className = "custom-slider-range";
+      const valueRow = document.createElement("div");
+      valueRow.className = "custom-slider-value-row";
+      const valueButton = document.createElement("button");
+      valueButton.type = "button";
+      valueButton.className = "custom-slider-value";
+      const valueEditor = document.createElement("input");
+      valueEditor.type = "number";
+      valueEditor.className = "custom-slider-value-editor";
+      valueEditor.hidden = true;
+      valueRow.append(valueButton, valueEditor);
+      main.append(range, valueRow);
+      control.append(minusButton, main, plusButton);
+
+      valueButton.addEventListener("click", () => this.openCustomSliderEditor(input));
+      valueEditor.addEventListener("blur", () => this.closeCustomSliderEditor(input, { commit: true }));
+      valueEditor.addEventListener("keydown", event => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          this.closeCustomSliderEditor(input, { commit: true });
+        }
+        if (event.key === "Escape") {
+          event.preventDefault();
+          this.closeCustomSliderEditor(input, { commit: false });
+        }
+      });
+      range.addEventListener("input", () => {
+        this.setNumberInputValue(input, range.value);
+      });
+      input.addEventListener("input", () => this.updateCustomSliderControl(input));
+      input.addEventListener("change", () => this.updateCustomSliderControl(input));
+
+      input._customSliderUi = {
+        control,
+        range,
+        valueButton,
+        valueEditor,
+        minusButton,
+        plusButton,
+      };
+      this.updateCustomSliderControl(input);
+    });
+  }
+
+  enhanceNumberInputs(scope) {
+    if (!scope) return;
+    scope.querySelectorAll('input[type="number"]').forEach(input => {
+      if (input.dataset.customSlider === "true") return;
+      if (input.classList.contains("custom-slider-value-editor")) return;
+      if (input.dataset.customStepper === "true") return;
+      input.dataset.customStepper = "true";
+      const wrapper = document.createElement("span");
+      wrapper.className = "number-input-wrap";
+      input.parentNode?.insertBefore(wrapper, input);
+      const createButton = (direction, label) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `number-stepper-btn number-stepper-${direction > 0 ? "up" : "down"}`;
+        button.textContent = label;
+        button.addEventListener("mousedown", event => event.preventDefault());
+        button.addEventListener("click", () => {
+          if (input.disabled) return;
+          if (direction > 0) input.stepUp();
+          else input.stepDown();
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+        return button;
+      };
+      wrapper.appendChild(createButton(-1, "-"));
+      wrapper.appendChild(input);
+      wrapper.appendChild(createButton(1, "+"));
+    });
   }
 
   syncMenuState() {
@@ -800,7 +1068,10 @@ export class App {
     const template = document.getElementById(`tpl-${mode}`);
     this.toolbar.innerHTML = "";
     this.toolbar.appendChild(template.content.cloneNode(true));
+    this.enhanceCustomSliderInputs(this.toolbar);
+    this.enhanceNumberInputs(this.toolbar);
     globalThis.htmx?.process(this.toolbar);
+    this.refreshCustomSliderControls(this.toolbar);
     this.syncMenuState();
   }
 
@@ -1002,8 +1273,6 @@ export class App {
   }
 
   updateComputedRows(margins) {
-    const bValue = document.getElementById("b-val");
-    if (bValue) bValue.textContent = `${margins.b.toFixed(2)}″`;
     this.setComputed("c-inner", `${margins.inner.toFixed(3)}″`);
     this.setComputed("c-top", `${margins.top.toFixed(3)}″`);
     this.setComputed("c-outer", margins.ok ? `${margins.outer.toFixed(3)}″` : "invalid", !margins.ok);
@@ -1025,6 +1294,7 @@ export class App {
     const sameAsPage = document.getElementById("ratio-same-as-page")?.checked;
     if (ratioInput) ratioInput.disabled = !!sameAsPage;
     if (sameAsPage && ratioInput) ratioInput.value = (this.getNumber("pw") / this.getNumber("ph")).toFixed(3);
+    this.refreshCustomSliderControls(this.toolbar);
   }
 
   syncBookLayoutFromInputs() {
@@ -1032,7 +1302,7 @@ export class App {
     this.book.layout.pw = this.getNumber("pw");
     this.book.layout.ph = this.getNumber("ph");
     this.book.layout.ratio = this.getNumber("ratio");
-    this.book.layout.b = this.getNumber("b-slider");
+    this.book.layout.b = this.getNumber("b-input");
     this.book.layout.mInner = this.getNumber("m-inner");
     this.book.layout.mTop = this.getNumber("m-top");
     this.book.layout.mBottom = this.getNumber("m-bottom");
@@ -1055,7 +1325,7 @@ export class App {
     setValue("ph", this.book.layout.ph);
     setValue("page-ratio", (this.book.layout.pw / this.book.layout.ph).toFixed(3));
     setValue("ratio", this.book.layout.ratio);
-    setValue("b-slider", this.book.layout.b);
+    setValue("b-input", this.book.layout.b);
     setValue("m-inner", this.book.layout.mInner);
     setValue("m-top", this.book.layout.mTop);
     setValue("m-bottom", this.book.layout.mBottom);
@@ -1072,6 +1342,7 @@ export class App {
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
     this.syncInputs();
+    this.refreshCustomSliderControls(this.toolbar);
     this.syncMenuState();
   }
 
@@ -1083,13 +1354,14 @@ export class App {
       const el = document.getElementById(id);
       if (el) el.value = value;
     };
-    setValue("b-slider", b.toFixed(3));
+    setValue("b-input", b.toFixed(3));
     setValue("m-inner", "1");
     setValue("m-top", (pageHeight / pageWidth).toFixed(3));
     setValue("m-bottom", (2 * pageHeight / pageWidth).toFixed(3));
     setValue("ratio", (pageWidth / pageHeight).toFixed(3));
     const ratioSameAsPage = document.getElementById("ratio-same-as-page");
     if (ratioSameAsPage) ratioSameAsPage.checked = true;
+    this.refreshCustomSliderControls(this.toolbar);
   }
 
   initLayoutListeners() {
@@ -1129,14 +1401,13 @@ export class App {
     });
 
     ["ratio", "m-inner", "m-top", "m-bottom"].forEach(id => this.addListener(id, "input", () => this.redraw()));
-    this.addListener("b-slider", "input", () => this.redraw());
+    this.addListener("b-input", "input", () => this.redraw());
     this.addListener("ratio-same-as-page", "change", () => this.redraw());
     this.addListener("preserve-ratio", "change", () => this.redraw());
     this.addListener("vdg-snap", "click", () => {
       this.applyVdGLayoutValues();
       this.redraw();
     });
-    this.addListener("print-btn", "click", () => this.printCurrentSpread());
   }
 
   initContentListeners() {
@@ -1726,6 +1997,10 @@ export class App {
       this.closeOpenMenus();
       this.saveProject();
     });
+    document.getElementById("interface-colors-btn")?.addEventListener("click", () => {
+      this.closeOpenMenus();
+      this.showInterfaceColorsModal();
+    });
     document.getElementById("content-file-input")?.addEventListener("change", event => this.handleContentFileInput(event));
     document.getElementById("project-file-input")?.addEventListener("change", event => this.handleProjectFileInput(event));
     document.querySelectorAll(".mode-menu-item").forEach(button =>
@@ -1766,6 +2041,13 @@ export class App {
         });
       })
     );
+    document.querySelectorAll(".menu-dropdown").forEach(menu => {
+      menu.addEventListener("click", event => {
+        if (event.target.closest(".menu-panel")) return;
+        event.preventDefault();
+        menu.open = !menu.open;
+      });
+    });
     document.addEventListener("click", event => {
       if (event.target.closest(".menu-dropdown")) return;
       this.closeOpenMenus();

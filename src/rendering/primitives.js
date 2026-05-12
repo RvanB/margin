@@ -10,12 +10,19 @@ export function snappedStrokeRect(ctx, x, y, w, h) {
   ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
 }
 
+function getInterfaceForeground() {
+  const value = globalThis.getComputedStyle?.(document.documentElement)
+    ?.getPropertyValue("--ui-foreground")
+    ?.trim();
+  return value || "#000000";
+}
+
 export function drawPageBorder(ctx, pagePxW, { showCenterLine = true } = {}) {
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
   const mid = Math.round(pagePxW);
   ctx.save();
-  ctx.strokeStyle = "#000";
+  ctx.strokeStyle = getInterfaceForeground();
   ctx.lineWidth = 1;
   ctx.strokeRect(0.5, 0.5, canvasWidth - 1, canvasHeight - 1);
   if (showCenterLine) {
