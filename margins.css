@@ -1,9 +1,5 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html[data-dark-mode="true"] {
-  filter: invert(100%) hue-rotate(180deg);
-}
-
 body {
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 10pt;
@@ -282,6 +278,104 @@ body {
 
 body[data-exporting="true"] {
   cursor: progress !important;
+}
+
+.app-modal {
+  margin: auto;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.app-modal::backdrop {
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.modal-card {
+  width: min(420px, calc(100vw - 32px));
+  border: 1px solid #000;
+  background: #fff;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #000;
+}
+
+.modal-title {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.modal-close-btn,
+.modal-action-btn {
+  font: inherit;
+  color: #000;
+  background: none;
+  border: 1px solid #000;
+  border-radius: 0;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.modal-content {
+  padding: 12px;
+}
+
+.modal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modal-section-label {
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+
+.modal-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.modal-inline-field {
+  display: grid;
+  grid-template-columns: 1fr minmax(0, 120px);
+  align-items: center;
+  gap: 10px;
+}
+
+.modal-stat-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+}
+
+.modal-stat-row span:last-child {
+  text-align: right;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
 }
 
 /* ── Toolbar (swappable region) ─────────────────────────────────────────────── */

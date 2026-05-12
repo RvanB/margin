@@ -51,10 +51,6 @@
           <span>Show center line</span>
         </label>
         <label class="menu-check">
-          <input type="checkbox" id="dark-mode">
-          <span>Dark mode</span>
-        </label>
-        <label class="menu-check">
           <input type="checkbox" id="vdg">
           <span>van de Graaf</span>
         </label>
@@ -104,8 +100,57 @@
 </div>
 
 <div id="busy-overlay" hidden aria-hidden="true">Exporting…</div>
+<dialog id="app-modal" class="app-modal"></dialog>
 
 <!-- ── Toolbar templates ───────────────────────────────────────────────────── -->
+
+<template id="tpl-modal-shell">
+  <div class="modal-card">
+    <div class="modal-header">
+      <div class="modal-title"></div>
+      <button type="button" class="modal-close-btn" data-modal-close>Close</button>
+    </div>
+    <div class="modal-content"></div>
+  </div>
+</template>
+
+<template id="tpl-export-modal">
+  <form id="export-modal-form" class="modal-form">
+    <div class="modal-section">
+      <div class="modal-section-label">Resolution</div>
+      <label class="modal-check">
+        <input type="radio" name="export-resolution-mode" value="source">
+        <span>Source resolution</span>
+      </label>
+      <label class="modal-check">
+        <input type="radio" name="export-resolution-mode" value="custom">
+        <span>Target DPI</span>
+      </label>
+      <div class="modal-inline-field">
+        <label for="export-dpi">DPI</label>
+        <input id="export-dpi" type="number" min="1" step="1" inputmode="numeric">
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <div class="modal-section-label">Statistics</div>
+      <div class="modal-stat-row"><span>Lowest source DPI</span><span id="export-lowest-dpi">Calculating…</span></div>
+      <div class="modal-stat-row"><span>Highest source DPI</span><span id="export-highest-dpi">Calculating…</span></div>
+    </div>
+
+    <div class="modal-section">
+      <label class="modal-check">
+        <input id="export-include-page-color" type="checkbox" checked>
+        <span>Include page color</span>
+      </label>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="modal-action-btn" data-modal-close>Cancel</button>
+      <button id="confirm-export-btn" type="submit" class="modal-action-btn">Export</button>
+    </div>
+  </form>
+</template>
 
 <template id="tpl-layout">
   <div class="section">

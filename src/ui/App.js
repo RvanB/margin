@@ -66,6 +66,7 @@ export class App {
     this.canvasAreaInner = document.getElementById("canvas-area-inner");
     this.canvasStage = document.getElementById("canvas-stage");
     this.toolbar = document.getElementById("toolbar");
+    this.modalHost = document.getElementById("app-modal");
     this.book = new Book();
     this.uiState = {
       appMode: "layout",
@@ -79,7 +80,6 @@ export class App {
       showMarginArrows: false,
       showLayoutContent: true,
       showCenterLine: true,
-      showDarkMode: false,
       showVdG: false,
     };
     this.layoutControlsState = {
@@ -96,6 +96,11 @@ export class App {
     this.interactivePreviewTimer = 0;
     this.exportingPages = false;
     this.exportProgress = { current: 0, total: 0, label: "" };
+    this.exportSettings = {
+      resolutionMode: "source",
+      dpi: 300,
+      includePageColor: true,
+    };
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.previewLayoutKey = "";
     this.animationCompletionScheduled = false;
@@ -119,16 +124,11 @@ export class App {
     this.canvasWrap.dataset.mode = "layout";
     this.mountToolbar("layout");
     this.populatePaperPresetMenu();
-    this.syncDarkMode();
     this.applyVdGLayoutValues();
     this.syncBookLayoutFromInputs();
     this.initLayoutListeners();
     this.bindGlobalListeners();
     this.redraw();
-  }
-
-  syncDarkMode() {
-    document.documentElement.dataset.darkMode = this.uiState.showDarkMode ? "true" : "false";
   }
 
   buildProjectData() {
@@ -208,7 +208,6 @@ export class App {
       "show-layout-content",
       "show-margin-arrows",
       "show-center-line",
-      "dark-mode",
       "vdg",
     ].forEach(id => {
       const control = document.getElementById(id);
@@ -225,6 +224,46 @@ export class App {
   setExportProgress(label, current = 0, total = 0) {
     this.exportProgress = { label, current, total };
     this.syncExportUI();
+  }
+
+  closeModal() {
+    if (!this.modalHost) return;
+    if (this.modalHost.open) this.modalHost.close();
+    this.modalHost.innerHTML = "";
+  }
+
+  showModal({ title, templateId, onOpen = null } = {}) {
+    if (!this.modalHost) return null;
+    this.closeModal();
+
+    const shellTemplate = document.getElementById("tpl-modal-shell");
+    const bodyTemplate = document.getElementById(templateId);
+    if (!shellTemplate || !bodyTemplate) return null;
+
+    const shell = shellTemplate.content.firstElementChild.cloneNode(true);
+    shell.querySelector(".modal-title").textContent = title || "";
+    const content = shell.querySelector(".modal-content");
+    content.appendChild(bodyTemplate.content.cloneNode(true));
+    this.modalHost.appendChild(shell);
+
+    const controller = new AbortController();
+    const { signal } = controller;
+    const close = () => this.modalHost?.close();
+
+    shell.querySelectorAll("[data-modal-close]").forEach(button => {
+      button.addEventListener("click", close, { signal });
+    });
+    this.modalHost.addEventListener("click", event => {
+      if (event.target === this.modalHost) close();
+    }, { signal });
+    this.modalHost.addEventListener("close", () => {
+      controller.abort();
+      this.modalHost.innerHTML = "";
+    }, { once: true, signal });
+    this.modalHost.showModal();
+
+    onOpen?.({ dialog: this.modalHost, shell, content, signal });
+    return { dialog: this.modalHost, shell, content, signal };
   }
 
   closeOpenMenus() {
@@ -245,11 +284,8 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const showCenterLine = document.getElementById("show-center-line");
     if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
-    const darkMode = document.getElementById("dark-mode");
-    if (darkMode) darkMode.checked = this.uiState.showDarkMode;
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
-    this.syncDarkMode();
     document.querySelectorAll(".mode-menu-item").forEach(button => {
       button.classList.toggle("active", button.dataset.mode === this.uiState.appMode);
     });
@@ -308,6 +344,13 @@ export class App {
     return Math.max(minScale, sourceWidth / rect.w, sourceHeight / rect.h);
   }
 
+  getExportScale(page, sourceCanvas, side, settings = this.exportSettings) {
+    if (settings?.resolutionMode === "custom") {
+      return Math.max(1, parseNumber(settings.dpi, 0));
+    }
+    return this.getNativeExportScale(page, sourceCanvas, side);
+  }
+
   async getNativeExportSourceCanvas(page) {
     if (page?.source?.type === "image" && page.source.file) {
       return { canvas: await loadImageFile(page.source.file), temporary: true };
@@ -318,7 +361,112 @@ export class App {
     return { canvas: page?.srcCanvas || page?.previewCanvas || null, temporary: false };
   }
 
-  async renderNativeExportPage(pageIndex) {
+  async getExportPageDpiInfo(pageIndex, signal = null) {
+    const page = this.book.pages[pageIndex];
+    if (!page) return null;
+    const side = this.getPageSide(pageIndex);
+    const { canvas: sourceCanvas, temporary } = await this.getNativeExportSourceCanvas(page);
+    if (!sourceCanvas || signal?.aborted) {
+      if (temporary && sourceCanvas) {
+        sourceCanvas.width = 0;
+        sourceCanvas.height = 0;
+      }
+      return null;
+    }
+
+    try {
+      const dpi = this.getNativeExportScale(page, sourceCanvas, side);
+      return { pageIndex, dpi };
+    } finally {
+      if (temporary) {
+        sourceCanvas.width = 0;
+        sourceCanvas.height = 0;
+      }
+    }
+  }
+
+  formatExportDpiLabel(info) {
+    if (!info) return "—";
+    const roundedDpi = info.dpi >= 100 ? Math.round(info.dpi) : Number(info.dpi.toFixed(1));
+    return `Page ${info.pageIndex + 1} — ${roundedDpi} DPI`;
+  }
+
+  async getExportDpiStats(signal = null) {
+    const infos = [];
+    for (let pageIndex = 0; pageIndex < this.book.pages.length; pageIndex += 1) {
+      if (signal?.aborted) return null;
+      const info = await this.getExportPageDpiInfo(pageIndex, signal);
+      if (info) infos.push(info);
+    }
+    if (!infos.length) return { lowest: null, highest: null };
+    return {
+      lowest: infos.reduce((lowest, current) => (current.dpi < lowest.dpi ? current : lowest)),
+      highest: infos.reduce((highest, current) => (current.dpi > highest.dpi ? current : highest)),
+    };
+  }
+
+  async showExportModal() {
+    if (this.exportingPages) return;
+    if (!this.book.pages.length) {
+      window.alert("Load pages before exporting.");
+      return;
+    }
+
+    this.showModal({
+      title: "Export pages",
+      templateId: "tpl-export-modal",
+      onOpen: ({ content, dialog, signal }) => {
+        const form = content.querySelector("#export-modal-form");
+        const sourceRadio = form?.querySelector('input[name="export-resolution-mode"][value="source"]');
+        const customRadio = form?.querySelector('input[name="export-resolution-mode"][value="custom"]');
+        const dpiInput = form?.querySelector("#export-dpi");
+        const includePageColor = form?.querySelector("#export-include-page-color");
+        const lowestDpi = form?.querySelector("#export-lowest-dpi");
+        const highestDpi = form?.querySelector("#export-highest-dpi");
+        if (!form || !sourceRadio || !customRadio || !dpiInput || !includePageColor) return;
+
+        sourceRadio.checked = this.exportSettings.resolutionMode !== "custom";
+        customRadio.checked = this.exportSettings.resolutionMode === "custom";
+        dpiInput.value = String(this.exportSettings.dpi);
+        includePageColor.checked = this.exportSettings.includePageColor !== false;
+
+        const syncResolutionInputs = () => {
+          dpiInput.disabled = !customRadio.checked;
+        };
+
+        sourceRadio.addEventListener("change", syncResolutionInputs, { signal });
+        customRadio.addEventListener("change", syncResolutionInputs, { signal });
+        syncResolutionInputs();
+
+        form.addEventListener("submit", async event => {
+          event.preventDefault();
+          const resolutionMode = customRadio.checked ? "custom" : "source";
+          const dpi = Math.round(parseNumber(dpiInput.value, 0));
+          if (resolutionMode === "custom" && dpi <= 0) {
+            window.alert("Enter a DPI greater than 0.");
+            dpiInput.focus();
+            return;
+          }
+
+          this.exportSettings = {
+            resolutionMode,
+            dpi: resolutionMode === "custom" ? dpi : this.exportSettings.dpi,
+            includePageColor: includePageColor.checked,
+          };
+          dialog.close();
+          await this.exportAllPagesNative(this.exportSettings);
+        }, { signal });
+
+        this.getExportDpiStats(signal).then(stats => {
+          if (signal.aborted || !stats) return;
+          if (lowestDpi) lowestDpi.textContent = this.formatExportDpiLabel(stats.lowest);
+          if (highestDpi) highestDpi.textContent = this.formatExportDpiLabel(stats.highest);
+        });
+      },
+    });
+  }
+
+  async renderNativeExportPage(pageIndex, settings = this.exportSettings) {
     const page = this.book.pages[pageIndex];
     if (!page) return null;
     const side = this.getPageSide(pageIndex);
@@ -326,7 +474,7 @@ export class App {
     if (!sourceCanvas) return null;
 
     try {
-      const exportScale = this.getNativeExportScale(page, sourceCanvas, side);
+      const exportScale = this.getExportScale(page, sourceCanvas, side, settings);
       const margins = computeMargins(this.book.layout, exportScale);
       const previewRenderer = typeof this.spreadRenderer.getPlacedPagePreview === "function"
         ? this.spreadRenderer
@@ -340,6 +488,7 @@ export class App {
           layout: this.book.layout,
           side,
           pageHeight: margins.pagePxH,
+          includePageColor: settings?.includePageColor !== false,
         }
       );
     } finally {
@@ -368,13 +517,14 @@ export class App {
     setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
-  async exportAllPagesNative() {
+  async exportAllPagesNative(settings = this.exportSettings) {
     if (this.exportingPages) return;
     if (!this.book.pages.length) {
       window.alert("Load pages before exporting.");
       return;
     }
 
+    this.closeModal();
     this.exportingPages = true;
     this.setExportProgress("Preparing export", 0, this.book.pages.length);
     try {
@@ -392,7 +542,7 @@ export class App {
 
       for (let pageIndex = 0; pageIndex < this.book.pages.length; pageIndex += 1) {
         this.setExportProgress("Rendering page", pageIndex, this.book.pages.length);
-        const exportCanvas = await this.renderNativeExportPage(pageIndex);
+        const exportCanvas = await this.renderNativeExportPage(pageIndex, settings);
         if (!exportCanvas) continue;
         try {
           const blob = await canvasToBlob(exportCanvas);
@@ -803,8 +953,6 @@ export class App {
     if (showLayoutContent) showLayoutContent.checked = this.uiState.showLayoutContent;
     const showCenterLine = document.getElementById("show-center-line");
     if (showCenterLine) showCenterLine.checked = this.uiState.showCenterLine;
-    const darkMode = document.getElementById("dark-mode");
-    if (darkMode) darkMode.checked = this.uiState.showDarkMode;
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
     this.syncInputs();
@@ -1418,7 +1566,7 @@ export class App {
     document.getElementById("canvas-zoom-out")?.addEventListener("click", () => this.adjustContentZoom(-1));
     document.getElementById("export-pages-btn")?.addEventListener("click", () => {
       this.closeOpenMenus();
-      this.exportAllPagesNative();
+      this.showExportModal();
     });
     document.getElementById("save-project-btn")?.addEventListener("click", () => {
       this.closeOpenMenus();
@@ -1446,11 +1594,6 @@ export class App {
       this.uiState.showCenterLine = event.target.checked;
       this.closeOpenMenus();
       this.redraw();
-    });
-    document.getElementById("dark-mode")?.addEventListener("change", event => {
-      this.uiState.showDarkMode = event.target.checked;
-      this.syncDarkMode();
-      this.closeOpenMenus();
     });
     document.getElementById("vdg")?.addEventListener("change", event => {
       this.uiState.showVdG = event.target.checked;
@@ -1511,6 +1654,7 @@ export class App {
       event.stopPropagation();
       return;
     }
+    if (this.modalHost?.open) return;
     if (event.target.matches("input, select, textarea")) return;
     const key = typeof event.key === "string" ? event.key.toLowerCase() : event.key;
     const base = this.getEffectiveSpread();
