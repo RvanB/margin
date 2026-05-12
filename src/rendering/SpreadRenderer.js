@@ -75,10 +75,17 @@ export class SpreadRenderer {
   getPlacedPagePreview(page, effectEntry, display, options = {}) {
     const sourceCanvas = options.sourceCanvas ?? page?.previewCanvas ?? page?.displayCanvas;
     const layout = options.layout ?? null;
+    const margins = options.margins ?? (
+      layout
+        ? computeMargins(layout, Math.max(1, Math.round(options.pageHeight || SHARED_PREVIEW_SIZE)) / layout.ph)
+        : null
+    );
     const side = options.side === "left" ? "left" : "right";
     const pageHeight = Math.max(1, Math.round(options.pageHeight || SHARED_PREVIEW_SIZE));
-    const pageWidth = layout
-      ? Math.max(1, Math.round(pageHeight * (layout.pw / layout.ph)))
+    const pageWidth = margins
+      ? Math.max(1, Math.round(margins.pagePxW))
+      : layout
+        ? Math.max(1, Math.round(pageHeight * (layout.pw / layout.ph)))
       : Math.max(1, Math.round(pageHeight * (page.aspectRatio || 1)));
     const pageCanvas = document.createElement("canvas");
     pageCanvas.width = pageWidth;
@@ -92,9 +99,8 @@ export class SpreadRenderer {
       ? display.contentBlendMode
       : "source-over";
 
-    if (!sourceCanvas || !layout) return pageCanvas;
+    if (!sourceCanvas || !margins) return pageCanvas;
 
-    const margins = computeMargins(layout, pageHeight / layout.ph);
     const geometry = getPageGeometry(margins, side, page, 0);
     const contentRect = geometry.contentRect;
     this.#drawPageContent(
