@@ -21,7 +21,7 @@ async function withLoadedImage(file, work) {
     const image = new Image();
     await new Promise((resolve, reject) => {
       image.onload = resolve;
-      image.onerror = reject;
+      image.onerror = () => reject(new Error(`Could not load image file: ${file?.name || "unknown"}`));
       image.src = url;
     });
     return await work(image);

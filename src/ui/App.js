@@ -30,6 +30,49 @@ function parseNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function isProjectJsonFile(file) {
+  return !!file && (
+    file.type === "application/json"
+    || file.name.toLowerCase().endsWith(".json")
+  );
+}
+
+function isZipFile(file) {
+  return !!file && (
+    file.type === "application/zip"
+    || file.type === "application/x-zip-compressed"
+    || file.name.toLowerCase().endsWith(".zip")
+  );
+}
+
+function inferMimeTypeFromName(name) {
+  const lower = String(name || "").toLowerCase();
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".pdf")) return "application/pdf";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  if (lower.endsWith(".avif")) return "image/avif";
+  if (lower.endsWith(".tif") || lower.endsWith(".tiff")) return "image/tiff";
+  return "";
+}
+
+function shouldImportZipEntry(name) {
+  const normalized = String(name || "").replaceAll("\\", "/");
+  const segments = normalized.split("/").filter(Boolean);
+  if (!segments.length) return false;
+  if (segments.some(segment => segment.startsWith(".") || segment.startsWith("_"))) return false;
+  return true;
+}
+
+function getZipEntryFileName(name) {
+  const normalized = String(name || "").replaceAll("\\", "/");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] || normalized;
+}
+
 function normalizeCrop(crop) {
   return {
     top: Math.max(0, Math.round(parseNumber(crop?.top))),
@@ -96,6 +139,8 @@ export class App {
     this.interactivePreviewTimer = 0;
     this.exportingPages = false;
     this.exportProgress = { current: 0, total: 0, label: "" };
+    this.loadingFiles = false;
+    this.loadProgress = { current: 0, total: 0, label: "" };
     this.exportSettings = {
       resolutionMode: "source",
       dpi: 300,
@@ -186,15 +231,19 @@ export class App {
     const status = document.getElementById("export-status");
     const statusText = document.getElementById("export-status-text");
     const progressFill = document.getElementById("export-progress-fill");
-    if (status) status.hidden = !this.exportingPages;
+    const showingExportProgress = this.exportingPages;
+    const showingLoadProgress = this.loadingFiles && !showingExportProgress;
+    if (status) status.hidden = !(showingExportProgress || showingLoadProgress);
     if (statusText) {
-      const { current, total, label } = this.exportProgress;
-      statusText.textContent = this.exportingPages
+      const progressState = showingExportProgress ? this.exportProgress : this.loadProgress;
+      const { current, total, label } = progressState;
+      statusText.textContent = (showingExportProgress || showingLoadProgress)
         ? `${label}${total > 0 ? ` ${current} / ${total}` : ""}`
         : "";
     }
     if (progressFill) {
-      const { current, total } = this.exportProgress;
+      const progressState = showingExportProgress ? this.exportProgress : this.loadProgress;
+      const { current, total } = progressState;
       const progress = total > 0 ? (current / total) * 100 : 0;
       progressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
     }
@@ -223,6 +272,11 @@ export class App {
 
   setExportProgress(label, current = 0, total = 0) {
     this.exportProgress = { label, current, total };
+    this.syncExportUI();
+  }
+
+  setLoadProgress(label, current = 0, total = 0) {
+    this.loadProgress = { label, current, total };
     this.syncExportUI();
   }
 
@@ -580,12 +634,59 @@ export class App {
     const file = event.target.files?.[0] || null;
     event.target.value = "";
     if (!file) return;
+    await this.loadProjectFile(file);
+  }
+
+  async loadProjectFile(file) {
+    if (!file) return false;
     try {
       this.applyProjectData(JSON.parse(await file.text()));
+      return true;
     } catch (error) {
       console.error("Failed to load project:", error);
       window.alert("Could not load project JSON.");
+      return false;
     }
+  }
+
+  async expandImportFiles(files) {
+    const expandedFiles = [];
+
+    for (const file of Array.from(files)) {
+      if (!isZipFile(file)) {
+        expandedFiles.push(file);
+        continue;
+      }
+
+      if (typeof globalThis.JSZip !== "function") {
+        console.error("JSZip unavailable for ZIP import");
+        window.alert(`Could not read "${file.name}".`);
+        continue;
+      }
+
+      try {
+        const zip = await globalThis.JSZip.loadAsync(await file.arrayBuffer());
+        const entries = [];
+        zip.forEach((_, entry) => {
+          if (!entry.dir && shouldImportZipEntry(entry.name)) entries.push(entry);
+        });
+
+        for (const entry of entries) {
+          const blob = await entry.async("blob");
+          const fileName = getZipEntryFileName(entry.name);
+          expandedFiles.push(new File(
+            [blob],
+            fileName,
+            { type: blob.type || inferMimeTypeFromName(fileName) }
+          ));
+        }
+      } catch (error) {
+        console.error("Failed to read ZIP file:", error);
+        window.alert(`Could not read "${file.name}".`);
+      }
+    }
+
+    return expandedFiles;
   }
 
   applyProjectPageState(page, pageState) {
@@ -1466,56 +1567,94 @@ export class App {
   }
 
   async appendFiles(files) {
-    const items = Array.from(files);
-    if (!items.length) return;
+    this.loadingFiles = true;
+    this.setLoadProgress("Preparing load", 0, 0);
+    try {
+      const items = await this.expandImportFiles(files);
+      if (!items.length) return;
+      const contentFiles = items.filter(file => !isProjectJsonFile(file));
+      const projectFiles = items.filter(file => isProjectJsonFile(file));
+      const totalFiles = contentFiles.length + projectFiles.length;
+      let processedFiles = 0;
+      let appendedPages = false;
 
-    for (const file of items) {
-      const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
-      if (isPdf) {
-        const pdfDoc = await loadPdfDocument(await file.arrayBuffer());
-        const aspectRatios = await Promise.all(
-          Array.from({ length: pdfDoc.numPages }, (_, index) =>
-            getPdfPageAspectRatio(pdfDoc, index + 1)
-          )
-        );
-        aspectRatios.forEach((aspectRatio, index) => {
+      for (const file of contentFiles) {
+        this.setLoadProgress("Loading content", processedFiles, totalFiles);
+        const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+        if (isPdf) {
+          const pdfDoc = await loadPdfDocument(await file.arrayBuffer());
+          const aspectRatios = await Promise.all(
+            Array.from({ length: pdfDoc.numPages }, (_, index) =>
+              getPdfPageAspectRatio(pdfDoc, index + 1)
+            )
+          );
+          aspectRatios.forEach((aspectRatio, index) => {
+            this.book.addPage(new Page({
+              source: { type: "pdf", pdfDoc, pageNum: index + 1 },
+              aspectRatio,
+            }));
+          });
+          appendedPages = true;
+          processedFiles += 1;
+          continue;
+        }
+
+        try {
+          const { canvas: thumbnailSourceCanvas, width, height } = await loadImagePreview(file, SHARED_PREVIEW_SIZE);
           this.book.addPage(new Page({
-            source: { type: "pdf", pdfDoc, pageNum: index + 1 },
-            aspectRatio,
-    
+            source: { type: "image", file },
+            previewCanvas: thumbnailSourceCanvas,
+            thumbnailSourceCanvas,
+            aspectRatio: width / height,
           }));
-        });
-        continue;
+          appendedPages = true;
+        } catch (error) {
+          console.error("Failed to load dropped file:", error);
+          window.alert(`Could not load "${file.name}".`);
+        }
+        processedFiles += 1;
       }
 
-      const { canvas: thumbnailSourceCanvas, width, height } = await loadImagePreview(file, SHARED_PREVIEW_SIZE);
-      this.book.addPage(new Page({
-        source: { type: "image", file },
-        previewCanvas: thumbnailSourceCanvas,
-        thumbnailSourceCanvas,
-        aspectRatio: width / height,
+      if (!appendedPages) {
+        for (const file of projectFiles) {
+          this.setLoadProgress("Loading settings", processedFiles, totalFiles);
+          await this.loadProjectFile(file);
+          processedFiles += 1;
+        }
+        return;
+      }
 
-      }));
+      this.setLoadProgress("Finalizing load", processedFiles, totalFiles);
+      this.lazyPageLoader.reset();
+      this.spreadRenderer.stopAnimation();
+      this.animationCompletionScheduled = false;
+      this.animationDirection = 0;
+      this.contentEffectCaches = new WeakMap();
+      this.overlayCanvas.style.visibility = "";
+      this.uiState.currentSpread = 0;
+      this.uiState.effectiveSpread = 0;
+      this.uiState.editingPageIdx = 0;
+      this.uiState.selectedPageIdxs = this.book.pages.length ? new Set([0]) : new Set();
+      this.pageStrip.invalidateAllThumbnails();
+      this.pageStrip.scrollToStart();
+      this.refreshAllPlacedPreviews();
+      this.lazyPageLoader.ensureSpreadLoaded(0, 1, { allowHighRes: false });
+      this.lazyPageLoader.warmAllPreviews();
+      if (projectFiles.length) {
+        for (const file of projectFiles) {
+          this.setLoadProgress("Loading settings", processedFiles, totalFiles);
+          await this.loadProjectFile(file);
+          processedFiles += 1;
+        }
+        return;
+      }
+      if (this.uiState.appMode === "content") this.syncPageUI();
+      this.redraw();
+      this.schedulePreviewRedraw();
+    } finally {
+      this.loadingFiles = false;
+      this.setLoadProgress("", 0, 0);
     }
-
-    this.lazyPageLoader.reset();
-    this.spreadRenderer.stopAnimation();
-    this.animationCompletionScheduled = false;
-    this.animationDirection = 0;
-    this.contentEffectCaches = new WeakMap();
-    this.overlayCanvas.style.visibility = "";
-    this.uiState.currentSpread = 0;
-    this.uiState.effectiveSpread = 0;
-    this.uiState.editingPageIdx = 0;
-    this.uiState.selectedPageIdxs = this.book.pages.length ? new Set([0]) : new Set();
-    this.pageStrip.invalidateAllThumbnails();
-    this.pageStrip.scrollToStart();
-    this.refreshAllPlacedPreviews();
-    this.lazyPageLoader.ensureSpreadLoaded(0, 1, { allowHighRes: false });
-    this.lazyPageLoader.warmAllPreviews();
-    if (this.uiState.appMode === "content") this.syncPageUI();
-    this.redraw();
-    this.schedulePreviewRedraw();
   }
 
   onPageReady(pageIndex) {
