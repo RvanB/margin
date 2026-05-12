@@ -39,6 +39,8 @@ function normalizeHexColor(value, fallback) {
   return fallback;
 }
 
+const MULTI_SPREAD_TURN_INTERVAL_MS = 40;
+
 function isProjectJsonFile(file) {
   return !!file && (
     file.type === "application/json"
@@ -163,6 +165,8 @@ export class App {
     this.previewLayoutKey = "";
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
+    this.queuedSpreadTurnTimer = 0;
+    this.queuedSpreadTurnToken = 0;
     this.panOrigin = null;
     this.isPanning = false;
     this.pendingCanvasClick = null;
@@ -997,6 +1001,7 @@ export class App {
 
     if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
     this.endInteractiveContentPreview({ redraw: false });
+    this.cancelQueuedSpreadTurns();
     this.spreadRenderer.stopAnimation();
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
@@ -1611,7 +1616,56 @@ export class App {
       }
     }
 
+    if (Math.abs(targetSpread - this.getEffectiveSpread()) > 1) {
+      this.queueSpreadTurnsTo(targetSpread, pageIndex);
+      return;
+    }
     this.navigateTo(targetSpread, pageIndex);
+  }
+
+  cancelQueuedSpreadTurns() {
+    this.queuedSpreadTurnToken += 1;
+    if (this.queuedSpreadTurnTimer) {
+      clearTimeout(this.queuedSpreadTurnTimer);
+      this.queuedSpreadTurnTimer = 0;
+    }
+  }
+
+  queueSpreadTurnsTo(targetSpread, preferredPageIndex = null) {
+    const clampedTarget = Math.max(0, Math.min(targetSpread, this.book.numSpreads() - 1));
+    const fromSpread = this.getEffectiveSpread();
+    const distance = Math.abs(clampedTarget - fromSpread);
+    if (distance <= 1 || !this.lastMargins || !this.book.pages.length) {
+      this.navigateTo(clampedTarget, preferredPageIndex);
+      return;
+    }
+
+    const direction = clampedTarget > fromSpread ? 1 : -1;
+    if (this.spreadRenderer.isAnimating && this.animationDirection && direction !== this.animationDirection) return;
+
+    this.cancelQueuedSpreadTurns();
+    const token = this.queuedSpreadTurnToken;
+    const advance = () => {
+      if (token !== this.queuedSpreadTurnToken) return;
+      const currentSpread = this.getEffectiveSpread();
+      if (currentSpread === clampedTarget) {
+        this.queuedSpreadTurnTimer = 0;
+        return;
+      }
+      const nextSpread = currentSpread + direction;
+      const isFinalStep = nextSpread === clampedTarget;
+      this.navigateTo(nextSpread, isFinalStep ? preferredPageIndex : null, {
+        fromQueuedJump: true,
+        selectPage: isFinalStep,
+      });
+      if (!isFinalStep) {
+        this.queuedSpreadTurnTimer = setTimeout(advance, MULTI_SPREAD_TURN_INTERVAL_MS);
+      } else {
+        this.queuedSpreadTurnTimer = 0;
+      }
+    };
+
+    advance();
   }
 
   selectSpreadPage(spreadIndex, preferredPageIndex = null) {
@@ -1629,13 +1683,14 @@ export class App {
     this.syncPageUI();
   }
 
-  navigateTo(targetSpread, preferredPageIndex = null) {
+  navigateTo(targetSpread, preferredPageIndex = null, options = {}) {
     const clampedTarget = Math.max(0, Math.min(targetSpread, this.book.numSpreads() - 1));
     if (clampedTarget === this.getEffectiveSpread()) return;
+    if (!options.fromQueuedJump) this.cancelQueuedSpreadTurns();
 
     this.endInteractiveContentPreview({ redraw: false });
     this.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, { allowHighRes: false });
-    this.selectSpreadPage(clampedTarget, preferredPageIndex);
+    if (options.selectPage !== false) this.selectSpreadPage(clampedTarget, preferredPageIndex);
 
     if (!this.lastMargins || !this.book.pages.length) {
       this.uiState.currentSpread = clampedTarget;
@@ -1941,6 +1996,7 @@ export class App {
 
       this.setLoadProgress("Finalizing load", processedFiles, totalFiles);
       this.lazyPageLoader.reset();
+      this.cancelQueuedSpreadTurns();
       this.spreadRenderer.stopAnimation();
       this.animationCompletionScheduled = false;
       this.animationDirection = 0;
@@ -1990,6 +2046,7 @@ export class App {
     if (mode === this.uiState.appMode) return;
     if (this.uiState.appMode === "content") this.flushDirtyPlacedPreviews();
     this.endInteractiveContentPreview({ redraw: false });
+    this.cancelQueuedSpreadTurns();
     this.spreadRenderer.stopAnimation();
     this.animationCompletionScheduled = false;
     this.animationDirection = 0;
