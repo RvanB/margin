@@ -1,10 +1,12 @@
 import { drawPageBorder, getPageChromeColor } from "./primitives.js";
+import { getPaperTextureCanvasSync, loadPaperTextureCanvas } from "./paperTexture.js";
 import { SpreadRenderer } from "./SpreadRenderer.js";
 import { getPageGeometry } from "./layout.js";
 
 const MAX_SHADOW_OCCLUDERS = 8;
 const TURN_EASING_POWER = 3;
 const TURN_DURATION_MS = 750;
+const DEBUG_LOG_TURN_HINGE = false;
 const BASE_PAGE_SURFACE_SCALE = 2;
 const MAX_PAGE_SURFACE_EDGE = 8192;
 
@@ -383,6 +385,7 @@ export class WebGPUSpreadRenderer {
     this.emptyShowThroughCanvas = document.createElement("canvas");
     this.emptyShowThroughCanvas.width = 1;
     this.emptyShowThroughCanvas.height = 1;
+    this.paperTextureCanvas = getPaperTextureCanvasSync();
     this.fallbackRenderer = null;
     this.animationFrame = 0;
     this.animations = [];
@@ -402,6 +405,13 @@ export class WebGPUSpreadRenderer {
       setBackendName(this.backendName);
       return;
     }
+
+    loadPaperTextureCanvas().then(canvas => {
+      this.paperTextureCanvas = canvas;
+      if (this.lastRenderArgs && !this.isAnimating) {
+        this.render(...this.lastRenderArgs);
+      }
+    });
 
     this.initPromise = this.#init();
   }
@@ -676,6 +686,7 @@ export class WebGPUSpreadRenderer {
               @group(0) @binding(1) var tex: texture_2d<f32>;
               @group(0) @binding(2) var<uniform> uniforms: Uniforms;
               @group(0) @binding(3) var showThroughTex: texture_2d<f32>;
+              @group(0) @binding(4) var paperTex: texture_2d<f32>;
 
               fn pointInQuad(hit: vec3<f32>, p0: vec3<f32>, p1: vec3<f32>, p3: vec3<f32>) -> bool {
                 let uAxis = p1 - p0;
@@ -880,8 +891,10 @@ export class WebGPUSpreadRenderer {
                 let turnFactor = clamp(1.0 - abs(normal.z), 0.0, 1.0);
                 let composited = mix(paper, applyBlendMode(paper, content), visibleTexel.a);
                 var lit = srgbToLinear(composited);
-                let pageHingeDist = select(input.pageUv.x, 1.0 - input.pageUv.x, uniforms.params.y > 0.5);
-                let toOuter = select(1.0, -1.0, uniforms.params.y > 0.5);
+                let hingeOnRight = uniforms.params.y > 0.5;
+                let shadingHingeOnRight = select(!hingeOnRight, hingeOnRight, frontVisible);
+                let pageHingeDist = select(input.pageUv.x, 1.0 - input.pageUv.x, shadingHingeOnRight);
+                let toOuter = select(1.0, -1.0, shadingHingeOnRight);
                 let spineZone = 0.45;
                 let spineNear = 1.0 - clamp(pageHingeDist / spineZone, 0.0, 1.0);
                 let spineSlope = pow(spineNear, 1.7);
@@ -912,6 +925,12 @@ export class WebGPUSpreadRenderer {
                 let lightDist = length(lightOffset) / max(1.0, uniforms.canvas.x);
                 let attenuation = 1.0 - clamp((lightDist - 1.25) * 0.5, 0.0, 0.42);
                 let bounce = 1.0 + pow(clamp(diffuse, 0.0, 1.0), 1.6) * 0.14;
+                let coolHighlight = pow(clamp(diffuse, 0.0, 1.0), 2.2) * 0.08;
+                let highlightBalance = vec3<f32>(
+                  1.0 - coolHighlight * 0.3,
+                  1.0 - coolHighlight * 0.12,
+                  1.0 + coolHighlight * 0.36
+                );
                 let paperLin = srgbToLinear(uniforms.paperColor.rgb);
                 let yellowness = max(0.0, 0.5 * (paperLin.r + paperLin.g) - paperLin.b);
                 let scatterTint = vec3<f32>(
@@ -921,6 +940,7 @@ export class WebGPUSpreadRenderer {
                 );
                 let scatterCurve = pow(1.0 - clamp(diffuse, 0.0, 1.0), 1.4);
                 let paperThickness = clamp(uniforms.shadowInfo.z, 0.0, 1.0);
+                let paperTextureStrength = clamp(uniforms.shadowInfo.w, 0.0, 1.0);
                 let scatter = scatterTint * (scatterCurve * yellowness);
                 var hiddenContent = unpremultiply(hiddenTexel.rgb, hiddenTexel.a);
                 hiddenContent = applyNeutralize(hiddenContent);
@@ -934,7 +954,21 @@ export class WebGPUSpreadRenderer {
                 );
                 let hiddenLin = srgbToLinear(hiddenTransmission);
                 let transmittance = (1.0 - paperThickness) * (1.0 - paperThickness) * 0.45;
-                let directShaded = lit * lightTint * shadowTint * attenuation * bounce + scatter;
+                let paperTexel = textureSample(paperTex, texSampler, input.pageUv).rgb;
+                let paperLuma = dot(paperTexel, vec3<f32>(0.2126, 0.7152, 0.0722));
+                let paperCentered = clamp((paperLuma - 0.965) * 3.4, -0.1, 0.075);
+                let paperChroma = clamp(
+                  paperTexel / max(vec3<f32>(paperLuma, paperLuma, paperLuma), vec3<f32>(0.0001, 0.0001, 0.0001)),
+                  vec3<f32>(0.97, 0.97, 0.97),
+                  vec3<f32>(1.03, 1.03, 1.03)
+                );
+                let paperMultiply = srgbToLinear(clamp(
+                  mix(vec3<f32>(1.0, 1.0, 1.0), paperChroma * (1.0 + paperCentered * 0.8), paperTextureStrength * 0.34),
+                  vec3<f32>(0.91, 0.91, 0.91),
+                  vec3<f32>(1.05, 1.05, 1.05)
+                ));
+                let paperLighting = 1.0 + paperCentered * 0.13 * paperTextureStrength;
+                let directShaded = lit * lightTint * shadowTint * attenuation * bounce * highlightBalance * paperLighting + scatter;
                 let withShowThrough = directShaded * mix(vec3<f32>(1.0, 1.0, 1.0), hiddenLin, transmittance);
                 var shadedLinear = withShowThrough;
                 if (uniforms.params.x > 0.5) {
@@ -954,6 +988,7 @@ export class WebGPUSpreadRenderer {
                   shadedLinear = shadedLinear * mix(vec3<f32>(1.0, 1.0, 1.0), innerTintLin, innerMask);
                   shadedLinear = shadedLinear * mix(vec3<f32>(1.0, 1.0, 1.0), coreTintLin, coreMask);
                 }
+                shadedLinear = shadedLinear * paperMultiply;
                 return vec4<f32>(linearToSrgb(shadedLinear), 1.0);
               }
             `,
@@ -1245,9 +1280,22 @@ export class WebGPUSpreadRenderer {
 
     const turningRect = turningScene.sideStates[sourceSide].pageRect;
     const hingeLocalX = sourceSide === "right" ? 0 : turningRect.w;
-    const hingeOnRight = hingeLocalX > turningRect.w * 0.5;
     const turnProgress = easeTurnProgress(animation.progress);
     const angle = animation.direction > 0 ? turnProgress * Math.PI : -turnProgress * Math.PI;
+    const hingeOnRight = animation.direction > 0
+      ? turnProgress >= 0.5
+      : turnProgress < 0.5;
+    if (DEBUG_LOG_TURN_HINGE) {
+      console.log("turn-frame", {
+        sourceSide,
+        hingeOnRight,
+        hingeLocalX,
+        direction: animation.direction,
+        progress: animation.progress,
+        turnProgress,
+        angle,
+      });
+    }
     const turningModel = createPageModelMatrix(turningRect, 0, angle, hingeLocalX);
     this.#drawPageSurface(pass, turningScene, sourceSide, turningModel, light, {
       hingeOnRight,
@@ -1330,6 +1378,7 @@ export class WebGPUSpreadRenderer {
     const textureResource = this.#getTextureResource(pageSurface);
     const showThroughCanvas = this.#getShowThroughSurfaceCanvas(scene, sideState, side);
     const showThroughResource = this.#getTextureResource(showThroughCanvas);
+    const paperTextureResource = this.#getTextureResource(this.paperTextureCanvas);
     const gpuEffects = effectEntry?.gpu?.fragment || {
       neutralizeColor: null,
       bwEnabled: false,
@@ -1348,7 +1397,8 @@ export class WebGPUSpreadRenderer {
     uniformData.set([this.canvas.width, this.canvas.height, -this.canvas.width, this.canvas.width], 20);
     uniformData.set([1, hingeOnRight ? 1 : 0, normalSign, flipX ? 1 : 0], 24);
     const paperThickness = Math.max(0, Math.min(1, scene.display.paperThickness ?? 0.5));
-    uniformData.set([occluders.length, ignoreOccluderId, paperThickness, 0], 28);
+    const paperTextureStrength = Math.max(0, Math.min(1, scene.display.paperTextureStrength ?? 0.2));
+    uniformData.set([occluders.length, ignoreOccluderId, paperThickness, paperTextureStrength], 28);
     uniformData.set(paperColor, 32);
     uniformData.set([neutralize[0], neutralize[1], neutralize[2], neutralizeEnabled], 36);
     uniformData.set([
@@ -1396,6 +1446,7 @@ export class WebGPUSpreadRenderer {
         { binding: 1, resource: textureResource.view },
         { binding: 2, resource: { buffer: uniformBuffer } },
         { binding: 3, resource: showThroughResource.view },
+        { binding: 4, resource: paperTextureResource.view },
       ],
     });
 

@@ -21,6 +21,7 @@ export class Book {
     this.display = {
       contentBlendMode: "multiply",
       paperThickness: 0.5,
+      paperTextureStrength: 0.2,
       ...display,
     };
     applyPaperPreset(this.display, paperPreset);

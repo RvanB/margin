@@ -1,12 +1,13 @@
 import {
   drawDirectionalLightFalloff,
 } from "./primitives.js";
+import { drawPaperTextureOverlay, getPaperTextureCanvasSync, loadPaperTextureCanvas } from "./paperTexture.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins, getPageGeometry } from "./layout.js";
 
 const TURN_EASING_POWER = 3;
-const TURN_DURATION_MS = 750;
+const TURN_DURATION_MS = 4000;
 
 function get2dContext(canvas, options) {
   return canvas.getContext("2d", options);
@@ -27,6 +28,14 @@ export class SpreadRenderer {
     this.animations = [];
     this.baseCanvas = null;
     this.doneCallbacks = [];
+    this.lastRenderArgs = null;
+    this.paperTextureCanvas = getPaperTextureCanvasSync();
+    loadPaperTextureCanvas().then(canvas => {
+      this.paperTextureCanvas = canvas;
+      if (this.lastRenderArgs && !this.isAnimating) {
+        this.render(...this.lastRenderArgs);
+      }
+    });
   }
 
   get isAnimating() {
@@ -42,6 +51,7 @@ export class SpreadRenderer {
   }
 
   render(pages, margins, effects, display, options = {}) {
+    this.lastRenderArgs = [pages, margins, effects, display, options];
     this.canvas.width = Math.round(2 * margins.pagePxW);
     this.canvas.height = Math.round(margins.pagePxH);
     this.ctx = get2dContext(this.canvas);
@@ -196,6 +206,11 @@ export class SpreadRenderer {
           shadowTintColor: display.shadowTintColor,
         }
       );
+      const paperTextureStrength = Math.max(0, Math.min(1, display.paperTextureStrength ?? 0.2));
+      if (paperTextureStrength > 0.0001) {
+        drawPaperTextureOverlay(ctx, sideStates.left.pageRect, this.paperTextureCanvas, { strength: paperTextureStrength });
+        drawPaperTextureOverlay(ctx, sideStates.right.pageRect, this.paperTextureCanvas, { strength: paperTextureStrength });
+      }
     }
 
     return {

@@ -174,7 +174,7 @@ export function drawPageCurvatureLighting(
   ctx.restore();
 
   const bouncePeak = 0.13;
-  const bounceColor = [1, 0.992, 0.96];
+  const bounceColor = [0.988, 0.994, 1];
   const bounceGradient = ctx.createLinearGradient(hingeX, 0, outerX, 0);
   bounceGradient.addColorStop(0.0, rgbToCss(bounceColor, 0));
   bounceGradient.addColorStop(0.3, rgbToCss(bounceColor, bouncePeak * 0.4));

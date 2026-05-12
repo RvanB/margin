@@ -203,6 +203,7 @@ export class App {
         paperPreset: this.book.display.paperPreset,
         contentBlendMode: this.book.display.contentBlendMode,
         paperThickness: this.book.display.paperThickness,
+        paperTextureStrength: this.book.display.paperTextureStrength,
       },
       layoutControls: { ...this.layoutControlsState },
       pageCount: this.book.pages.length,
@@ -615,6 +616,8 @@ export class App {
     if (showPageBorder) showPageBorder.checked = this.uiState.showPageBorder;
     const paperThickness = document.getElementById("paper-thickness");
     if (paperThickness) paperThickness.value = String(this.book.display.paperThickness ?? 0.5);
+    const paperTextureStrength = document.getElementById("paper-texture-strength");
+    if (paperTextureStrength) paperTextureStrength.value = String(this.book.display.paperTextureStrength ?? 0.2);
     const vdg = document.getElementById("vdg");
     if (vdg) vdg.checked = this.uiState.showVdG;
     document.querySelectorAll(".mode-menu-item").forEach(button => {
@@ -1040,6 +1043,9 @@ export class App {
     }
     if (typeof display.paperThickness === "number") {
       this.book.display.paperThickness = Math.max(0, Math.min(1, display.paperThickness));
+    }
+    if (typeof display.paperTextureStrength === "number") {
+      this.book.display.paperTextureStrength = Math.max(0, Math.min(1, display.paperTextureStrength));
     }
 
     const pageStates = Array.isArray(project.pages) ? project.pages : [];
@@ -2114,6 +2120,12 @@ export class App {
       const value = Number(event.target.value);
       if (!Number.isFinite(value)) return;
       this.book.display.paperThickness = Math.max(0, Math.min(1, value));
+      this.redraw();
+    });
+    document.getElementById("paper-texture-strength")?.addEventListener("input", event => {
+      const value = Number(event.target.value);
+      if (!Number.isFinite(value)) return;
+      this.book.display.paperTextureStrength = Math.max(0, Math.min(1, value));
       this.redraw();
     });
     document.getElementById("vdg")?.addEventListener("change", event => {
