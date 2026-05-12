@@ -76,55 +76,58 @@ function getPageChromeFillColor(paperColor) {
   return chrome === foreground ? background : foreground;
 }
 
-function drawCenterGutter(ctx, mid, canvasHeight, paperColor, shadowTintColor) {
+export function drawInsideEdgeShadow(
+  ctx,
+  pageRect,
+  side,
+  { paperColor = null, shadowTintColor = null, turnFactor = 0 } = {}
+) {
+  if (!pageRect || pageRect.w <= 0 || pageRect.h <= 0) return;
+
   const paper = hexToRgb(paperColor || "#ffffff", [1, 1, 1]);
   const shadowTint = hexToRgb(shadowTintColor || paperColor || "#000000", [0, 0, 0]);
   const darkness = Math.max(0, relativeLuminance(paper) - relativeLuminance(shadowTint));
-  const outerPeak = 0.14 + darkness * 0.22;
-  const innerEdge = 0.24 + darkness * 0.16;
-  const crackAlpha = 0.82 + darkness * 0.12;
-  const outerHalf = Math.max(8, Math.min(18, Math.round(mid * 0.015)));
-  const innerHalf = Math.max(3, Math.min(6, Math.round(outerHalf * 0.42)));
+  const edgeFactor = Math.max(0, Math.min(1, turnFactor));
+  const reach = Math.max(14, Math.min(72, Math.round(pageRect.w * (0.065 + edgeFactor * 0.09))));
+  const warmOuter = mixRgb(shadowTint, [0, 0, 0], 0.18);
+  const warmCenter = mixRgb(shadowTint, [0, 0, 0], 0.52 + edgeFactor * 0.14);
+  const outerPeak = 0.08 + darkness * 0.08 + edgeFactor * 0.08;
+  const centerPeak = 0.28 + darkness * 0.12 + edgeFactor * 0.18;
+  const hingeX = side === "left" ? Math.round(pageRect.x + pageRect.w) : Math.round(pageRect.x);
+  const outerX = side === "left" ? hingeX - reach : hingeX + reach;
+  const gradient = ctx.createLinearGradient(hingeX, 0, outerX, 0);
 
-  const outerGradient = ctx.createLinearGradient(mid - outerHalf, 0, mid + outerHalf, 0);
-  outerGradient.addColorStop(0, rgbToCss([0, 0, 0], 0));
-  outerGradient.addColorStop(0.34, rgbToCss([0, 0, 0], outerPeak * 0.18));
-  outerGradient.addColorStop(0.46, rgbToCss([0, 0, 0], outerPeak * 0.58));
-  outerGradient.addColorStop(0.5, rgbToCss([0, 0, 0], outerPeak));
-  outerGradient.addColorStop(0.54, rgbToCss([0, 0, 0], outerPeak * 0.58));
-  outerGradient.addColorStop(0.66, rgbToCss([0, 0, 0], outerPeak * 0.18));
-  outerGradient.addColorStop(1, rgbToCss([0, 0, 0], 0));
-  ctx.fillStyle = outerGradient;
-  ctx.fillRect(mid - outerHalf, 0, outerHalf * 2, canvasHeight);
+  gradient.addColorStop(0, rgbToCss(warmCenter, centerPeak));
+  gradient.addColorStop(0.018, rgbToCss(warmCenter, centerPeak * 0.98));
+  gradient.addColorStop(0.045, rgbToCss(warmCenter, centerPeak * 0.46));
+  gradient.addColorStop(0.12, rgbToCss(warmOuter, outerPeak * 0.9));
+  gradient.addColorStop(0.28, rgbToCss(warmOuter, outerPeak * 0.56));
+  gradient.addColorStop(0.55, rgbToCss(warmOuter, outerPeak * 0.24));
+  gradient.addColorStop(1, rgbToCss(paper, 0));
 
-  const innerGradient = ctx.createLinearGradient(mid - innerHalf, 0, mid + innerHalf, 0);
-  innerGradient.addColorStop(0, rgbToCss([0, 0, 0], 0));
-  innerGradient.addColorStop(0.32, rgbToCss([0, 0, 0], innerEdge));
-  innerGradient.addColorStop(0.48, rgbToCss([0, 0, 0], crackAlpha * 0.72));
-  innerGradient.addColorStop(0.5, rgbToCss([0, 0, 0], crackAlpha));
-  innerGradient.addColorStop(0.52, rgbToCss([0, 0, 0], crackAlpha * 0.72));
-  innerGradient.addColorStop(0.68, rgbToCss([0, 0, 0], innerEdge));
-  innerGradient.addColorStop(1, rgbToCss([0, 0, 0], 0));
-  ctx.fillStyle = innerGradient;
-  ctx.fillRect(mid - innerHalf, 0, innerHalf * 2, canvasHeight);
-
-  ctx.fillStyle = rgbToCss([0, 0, 0], Math.min(0.98, crackAlpha + 0.08));
-  ctx.fillRect(mid, 0, 1, canvasHeight);
+  ctx.save();
+  ctx.globalCompositeOperation = "multiply";
+  ctx.fillStyle = gradient;
+  ctx.fillRect(
+    Math.min(hingeX, outerX),
+    Math.round(pageRect.y),
+    Math.abs(outerX - hingeX),
+    Math.round(pageRect.h)
+  );
+  ctx.fillStyle = rgbToCss(warmCenter, Math.min(0.9, centerPeak + 0.08));
+  ctx.fillRect(hingeX + (side === "left" ? -1 : 0), Math.round(pageRect.y), 1, Math.round(pageRect.h));
+  ctx.restore();
 }
 
 export function drawPageBorder(
   ctx,
   pagePxW,
-  { showBorder = true, showCenterLine = true, paperColor = null, shadowTintColor = null } = {}
+  { showBorder = true, paperColor = null } = {}
 ) {
   const chromeColor = getPageChromeColor(paperColor);
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
-  const mid = Math.round(pagePxW);
   ctx.save();
-  if (showCenterLine) {
-    drawCenterGutter(ctx, mid, canvasHeight, paperColor, shadowTintColor);
-  }
   ctx.strokeStyle = chromeColor;
   ctx.lineWidth = 1;
   if (showBorder) {

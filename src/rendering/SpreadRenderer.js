@@ -1,4 +1,4 @@
-import { drawPageBorder } from "./primitives.js";
+import { drawInsideEdgeShadow } from "./primitives.js";
 import { applyEffectsToCanvas } from "../effects/pipeline.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins, getPageGeometry } from "./layout.js";
@@ -185,14 +185,17 @@ export class SpreadRenderer {
           );
         }
       }
-    }
 
-    drawPageBorder(ctx, margins.pagePxW, {
-      showBorder: false,
-      showCenterLine: options.showCenterLine !== false,
-      paperColor: display.paperColor,
-      shadowTintColor: display.shadowTintColor,
-    });
+      if (options.showCenterLine !== false) {
+        for (const [sideName, sideState] of Object.entries(sideStates)) {
+          if (!sideState.page) continue;
+          drawInsideEdgeShadow(ctx, sideState.pageRect, sideName, {
+            paperColor: display.paperColor,
+            shadowTintColor: display.shadowTintColor,
+          });
+        }
+      }
+    }
 
     return {
       spreadRects: {
@@ -481,12 +484,6 @@ export class SpreadRenderer {
       }
     }
 
-    drawPageBorder(this.ctx, pageWidth, {
-      showBorder: false,
-      showCenterLine: this.showCenterLine !== false,
-      paperColor: this.paperColor,
-      shadowTintColor: this.shadowTintColor,
-    });
     this.animations = remaining;
 
     if (remaining.length) {

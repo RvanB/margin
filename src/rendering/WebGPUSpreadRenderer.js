@@ -603,6 +603,7 @@ export class WebGPUSpreadRenderer {
                 @location(0) worldPos: vec3<f32>,
                 @location(1) worldNormal: vec3<f32>,
                 @location(2) uv: vec2<f32>,
+                @location(3) pageUv: vec2<f32>,
               };
 
               @vertex
@@ -625,6 +626,7 @@ export class WebGPUSpreadRenderer {
                 output.worldPos = world.xyz;
                 output.worldNormal = worldNormal;
                 output.uv = uv;
+                output.pageUv = baseUv;
                 return output;
               }
             `,
@@ -822,6 +824,7 @@ export class WebGPUSpreadRenderer {
                 @location(0) worldPos: vec3<f32>,
                 @location(1) worldNormal: vec3<f32>,
                 @location(2) uv: vec2<f32>,
+                @location(3) pageUv: vec2<f32>,
               };
 
               @fragment
@@ -833,8 +836,22 @@ export class WebGPUSpreadRenderer {
                 let selected = matchesSelection(content);
                 content = applyBlackAndWhite(content, selected);
                 content = applyLevels(content, selected);
-                let composited = mix(paper, applyBlendMode(paper, content), texel.a);
                 let normal = normalize(input.worldNormal);
+                let turnFactor = clamp(1.0 - abs(normal.z), 0.0, 1.0);
+                var composited = mix(paper, applyBlendMode(paper, content), texel.a);
+                if (uniforms.params.x > 0.5) {
+                  let hingeDistance = select(input.pageUv.x, 1.0 - input.pageUv.x, uniforms.params.y > 0.5);
+                  let reach = mix(0.07, 0.16, turnFactor);
+                  let edge = clamp(1.0 - hingeDistance / reach, 0.0, 1.0);
+                  let smoothEdge = edge * edge * (3.0 - 2.0 * edge);
+                  let outerShadow = (0.08 + 0.1 * turnFactor) * pow(smoothEdge, 1.5);
+                  let crackReach = mix(0.012, 0.022, turnFactor);
+                  let crack = clamp(1.0 - hingeDistance / crackReach, 0.0, 1.0);
+                  let crackShadow = (0.18 + 0.18 * turnFactor) * pow(crack, 0.72);
+                  let edgeShadow = outerShadow + crackShadow;
+                  let edgeTint = mix(uniforms.shadowTintColor.rgb, vec3<f32>(0.0, 0.0, 0.0), 0.46 + 0.18 * turnFactor);
+                  composited = composited * mix(vec3<f32>(1.0, 1.0, 1.0), edgeTint, edgeShadow);
+                }
                 let lightDir = vec3<f32>(0.0, 0.0, -1.0);
                 let diffuse = abs(dot(normal, lightDir));
                 let lightTint = mix(
@@ -848,7 +865,8 @@ export class WebGPUSpreadRenderer {
                   uniforms.shadowTintColor.rgb,
                   shadow
                 );
-                return vec4<f32>(composited * lightTint * shadowTint, 1.0);
+                let shaded = composited * lightTint * shadowTint;
+                return vec4<f32>(shaded, 1.0);
               }
             `,
       });
@@ -1143,11 +1161,13 @@ export class WebGPUSpreadRenderer {
 
     const turningRect = turningScene.sideStates[sourceSide].pageRect;
     const hingeLocalX = sourceSide === "right" ? 0 : turningRect.w;
+    const hingeOnRight = hingeLocalX > turningRect.w * 0.5;
     const turnProgress = easeTurnProgress(animation.progress);
     const angle = animation.direction > 0 ? turnProgress * Math.PI : -turnProgress * Math.PI;
     const turningModel = createPageModelMatrix(turningRect, 0, angle, hingeLocalX);
     if (Math.cos(angle) >= 0) {
       this.#drawPageSurface(pass, turningScene, sourceSide, turningModel, light, {
+        hingeOnRight,
         normalSign: 1,
         flipX: false,
         occluders,
@@ -1155,6 +1175,7 @@ export class WebGPUSpreadRenderer {
       });
     } else {
       this.#drawPageSurface(pass, backScene, backSide, turningModel, light, {
+        hingeOnRight,
         normalSign: -1,
         flipX: true,
         occluders,
@@ -1220,7 +1241,7 @@ export class WebGPUSpreadRenderer {
     side,
     modelMatrix,
     light,
-    { normalSign = 1, flipX = false, occluders = [], ignoreOccluderId = -1 } = {}
+    { hingeOnRight = side === "left", normalSign = 1, flipX = false, occluders = [], ignoreOccluderId = -1 } = {}
   ) {
     if (!scene?.margins.ok) return;
 
@@ -1249,7 +1270,7 @@ export class WebGPUSpreadRenderer {
     uniformData.set(modelMatrix, 0);
     uniformData.set([light.x, light.y, light.z, 1], 16);
     uniformData.set([this.canvas.width, this.canvas.height, -this.canvas.width, this.canvas.width], 20);
-    uniformData.set([0.8, 0.25, normalSign, flipX ? 1 : 0], 24);
+    uniformData.set([scene.showCenterLine ? 1 : 0, hingeOnRight ? 1 : 0, normalSign, flipX ? 1 : 0], 24);
     uniformData.set([occluders.length, ignoreOccluderId, 0, 0], 28);
     uniformData.set(paperColor, 32);
     uniformData.set([neutralize[0], neutralize[1], neutralize[2], neutralizeEnabled], 36);

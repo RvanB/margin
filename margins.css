@@ -536,6 +536,7 @@ input[type="number"]:focus, select:focus {
   min-height: 21px;
   border: 1px solid var(--ui-foreground);
   background: var(--ui-background);
+  overflow: hidden;
 }
 
 .number-input-wrap input[type="number"] {
@@ -554,15 +555,19 @@ input[type="number"]:focus, select:focus {
   --pm-minus-top: 10px;
   --pm-plus-left: 9px;
   --pm-plus-top: 6px;
+  appearance: none;
+  -webkit-appearance: none;
   flex: 0 0 19px;
   width: 19px;
-  min-height: 21px;
+  align-self: stretch;
   padding: 0;
-  color: var(--ui-background);
-  background: var(--ui-foreground);
-  border: 1px solid var(--ui-foreground);
+  color: var(--ui-foreground);
+  background: var(--ui-background);
+  border: none;
+  border-radius: 0;
   position: relative;
   font-size: 0;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -596,11 +601,11 @@ input[type="number"]:focus, select:focus {
 }
 
 .number-input-wrap > .number-stepper-btn:first-child {
-  border-right: none;
+  border-right: 1px solid var(--ui-foreground);
 }
 
 .number-input-wrap > input[type="number"] + .number-stepper-btn {
-  border-left: none;
+  border-left: 1px solid var(--ui-foreground);
 }
 
 .custom-slider-source {
@@ -651,9 +656,8 @@ input[type="number"]:focus, select:focus {
   width: var(--slider-node-size);
   height: var(--slider-node-size);
   border: 1px solid var(--ui-foreground);
-  border-radius: 999px;
-  background: var(--ui-foreground);
-  color: var(--ui-background);
+  background: var(--ui-background);
+  color: var(--ui-foreground);
   position: relative;
   font-size: 0;
   cursor: pointer;
@@ -976,7 +980,7 @@ input[type="range"]::-moz-range-progress {
 }
 
 #canvas-stage.show-page-shadow {
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.26);
 }
 
 #spread-canvas,
@@ -1013,10 +1017,9 @@ input[type="range"]::-moz-range-progress {
   --pm-plus-top: 5px;
   width: 21px;
   height: 21px;
-  border-radius: 999px;
   border: 1px solid var(--ui-foreground);
-  background: var(--ui-foreground);
-  color: var(--ui-background);
+  background: var(--ui-background);
+  color: var(--ui-foreground);
   position: relative;
   font-size: 0;
   cursor: pointer;
