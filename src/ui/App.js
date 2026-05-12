@@ -5,7 +5,7 @@ import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipel
 import { downscaleCanvasToMaxEdgeSync } from "../loading/downscaleCanvas.js";
 import { loadImageFile, loadImagePreview } from "../loading/imageLoader.js";
 import { LazyPageLoader } from "../loading/LazyPageLoader.js";
-import { getPdfPageAspectRatio, loadPdfDocument, renderPdfPage } from "../loading/pdfLoader.js";
+import { getPdfPageAspectRatio, getPdfPageRasterSourceInfo, loadPdfDocument, renderPdfPage } from "../loading/pdfLoader.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { computeMargins, computeScale, getPageGeometry } from "../rendering/layout.js";
 import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
@@ -410,14 +410,25 @@ export class App {
       return { canvas: await loadImageFile(page.source.file), temporary: true };
     }
     if (page?.source?.type === "pdf" && page.source.pdfDoc && page.source.pageNum) {
-      return { canvas: await renderPdfPage(page.source.pdfDoc, page.source.pageNum, 1), temporary: true };
+      const rasterInfo = await getPdfPageRasterSourceInfo(page.source.pdfDoc, page.source.pageNum);
+      return {
+        canvas: await renderPdfPage(page.source.pdfDoc, page.source.pageNum, rasterInfo.renderScale),
+        temporary: true,
+      };
     }
     return { canvas: page?.srcCanvas || page?.previewCanvas || null, temporary: false };
   }
 
-  async getExportPageDpiInfo(pageIndex, signal = null) {
+  async getExportPageEffectiveDpiInfo(pageIndex, signal = null) {
     const page = this.book.pages[pageIndex];
     if (!page) return null;
+    if (page?.source?.type === "pdf" && page.source.pdfDoc && page.source.pageNum) {
+      const rasterInfo = await getPdfPageRasterSourceInfo(page.source.pdfDoc, page.source.pageNum);
+      if (signal?.aborted) return null;
+      if (!rasterInfo.hasRasterImage) {
+        return { pageIndex, kind: "pdf-vector" };
+      }
+    }
     const side = this.getPageSide(pageIndex);
     const { canvas: sourceCanvas, temporary } = await this.getNativeExportSourceCanvas(page);
     if (!sourceCanvas || signal?.aborted) {
@@ -429,8 +440,11 @@ export class App {
     }
 
     try {
-      const dpi = this.getNativeExportScale(page, sourceCanvas, side);
-      return { pageIndex, dpi };
+      return {
+        pageIndex,
+        kind: "raster",
+        dpi: this.getNativeExportScale(page, sourceCanvas, side),
+      };
     } finally {
       if (temporary) {
         sourceCanvas.width = 0;
@@ -439,18 +453,19 @@ export class App {
     }
   }
 
-  formatExportDpiLabel(info) {
+  formatExportEffectiveDpiLabel(info) {
     if (!info) return "—";
-    const roundedDpi = info.dpi >= 100 ? Math.round(info.dpi) : Number(info.dpi.toFixed(1));
-    return `Page ${info.pageIndex + 1} — ${roundedDpi} DPI`;
+    if (info.kind === "pdf-vector") return `Page ${info.pageIndex + 1} — vector PDF`;
+    const dpi = Number(info.dpi.toFixed(info.dpi >= 100 ? 1 : 2));
+    return `Page ${info.pageIndex + 1} — ${dpi} DPI`;
   }
 
-  async getExportDpiStats(signal = null) {
+  async getExportEffectiveDpiStats(signal = null) {
     const infos = [];
     for (let pageIndex = 0; pageIndex < this.book.pages.length; pageIndex += 1) {
       if (signal?.aborted) return null;
-      const info = await this.getExportPageDpiInfo(pageIndex, signal);
-      if (info) infos.push(info);
+      const info = await this.getExportPageEffectiveDpiInfo(pageIndex, signal);
+      if (info?.kind === "raster" && info.dpi > 0) infos.push(info);
     }
     if (!infos.length) return { lowest: null, highest: null };
     return {
@@ -475,8 +490,8 @@ export class App {
         const customRadio = form?.querySelector('input[name="export-resolution-mode"][value="custom"]');
         const dpiInput = form?.querySelector("#export-dpi");
         const includePageColor = form?.querySelector("#export-include-page-color");
-        const lowestDpi = form?.querySelector("#export-lowest-dpi");
-        const highestDpi = form?.querySelector("#export-highest-dpi");
+        const lowestDpi = form?.querySelector("#export-lowest-effective-dpi");
+        const highestDpi = form?.querySelector("#export-highest-effective-dpi");
         if (!form || !sourceRadio || !customRadio || !dpiInput || !includePageColor) return;
 
         sourceRadio.checked = this.exportSettings.resolutionMode !== "custom";
@@ -511,10 +526,10 @@ export class App {
           await this.exportAllPagesNative(this.exportSettings);
         }, { signal });
 
-        this.getExportDpiStats(signal).then(stats => {
+        this.getExportEffectiveDpiStats(signal).then(stats => {
           if (signal.aborted || !stats) return;
-          if (lowestDpi) lowestDpi.textContent = this.formatExportDpiLabel(stats.lowest);
-          if (highestDpi) highestDpi.textContent = this.formatExportDpiLabel(stats.highest);
+          if (lowestDpi) lowestDpi.textContent = this.formatExportEffectiveDpiLabel(stats.lowest);
+          if (highestDpi) highestDpi.textContent = this.formatExportEffectiveDpiLabel(stats.highest);
         });
       },
     });
