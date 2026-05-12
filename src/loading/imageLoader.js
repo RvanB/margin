@@ -1,3 +1,5 @@
+import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
+
 function computeTargetSize(sourceWidth, sourceHeight, maxEdge) {
   const safeMaxEdge = Math.max(1, Math.round(maxEdge || 1));
   const sourceMaxEdge = Math.max(sourceWidth, sourceHeight);
@@ -12,6 +14,14 @@ function computeTargetSize(sourceWidth, sourceHeight, maxEdge) {
     width: Math.max(1, Math.round(sourceWidth * scale)),
     height: Math.max(1, Math.round(sourceHeight * scale)),
   };
+}
+
+function drawImageToCanvas(image, width = image.naturalWidth, height = image.naturalHeight) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d", { willReadFrequently: true }).drawImage(image, 0, 0, width, height);
+  return canvas;
 }
 
 async function withLoadedImage(file, work) {
@@ -32,21 +42,22 @@ async function withLoadedImage(file, work) {
 
 export async function loadImageFile(file) {
   return withLoadedImage(file, async image => {
-    const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth;
-    canvas.height = image.naturalHeight;
-    canvas.getContext("2d", { willReadFrequently: true }).drawImage(image, 0, 0);
-    return canvas;
+    return drawImageToCanvas(image);
   });
 }
 
 export async function loadImagePreview(file, maxEdge) {
   return withLoadedImage(file, async image => {
+    const sourceCanvas = drawImageToCanvas(image);
     const { width, height } = computeTargetSize(image.naturalWidth, image.naturalHeight, maxEdge);
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    canvas.getContext("2d", { willReadFrequently: true }).drawImage(image, 0, 0, width, height);
+    let canvas = sourceCanvas;
+    if (width !== sourceCanvas.width || height !== sourceCanvas.height) {
+      canvas = await downscaleCanvasToMaxEdge(sourceCanvas, maxEdge) || sourceCanvas;
+      if (canvas !== sourceCanvas) {
+        sourceCanvas.width = 0;
+        sourceCanvas.height = 0;
+      }
+    }
     return {
       canvas,
       width: image.naturalWidth,
