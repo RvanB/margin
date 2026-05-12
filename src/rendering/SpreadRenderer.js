@@ -46,6 +46,7 @@ export class SpreadRenderer {
     this.showPageBorder = options.showPageBorder !== false;
     this.showCenterLine = options.showCenterLine !== false;
     this.paperColor = display?.paperColor || null;
+    this.shadowTintColor = display?.shadowTintColor || null;
     return this.#paint(this.canvas, pages, margins, effects, display, options);
   }
 
@@ -56,6 +57,7 @@ export class SpreadRenderer {
     this.showPageBorder = options.showPageBorder !== false;
     this.showCenterLine = options.showCenterLine !== false;
     this.paperColor = display?.paperColor || null;
+    this.shadowTintColor = display?.shadowTintColor || null;
     const result = this.#paint(offscreen, pages, margins, effects, display, options);
     return { canvas: offscreen, ...result };
   }
@@ -186,9 +188,10 @@ export class SpreadRenderer {
     }
 
     drawPageBorder(ctx, margins.pagePxW, {
-      showBorder: options.showPageBorder !== false,
+      showBorder: false,
       showCenterLine: options.showCenterLine !== false,
       paperColor: display.paperColor,
+      shadowTintColor: display.shadowTintColor,
     });
 
     return {
@@ -479,9 +482,10 @@ export class SpreadRenderer {
     }
 
     drawPageBorder(this.ctx, pageWidth, {
-      showBorder: this.showPageBorder !== false,
+      showBorder: false,
       showCenterLine: this.showCenterLine !== false,
       paperColor: this.paperColor,
+      shadowTintColor: this.shadowTintColor,
     });
     this.animations = remaining;
 

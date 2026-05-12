@@ -1752,6 +1752,7 @@ export class App {
       const displayScale = this.renderZoom > 0 ? this.contentZoom / this.renderZoom : this.contentZoom;
       this.canvasStage.style.width = `${Math.max(1, Math.round(this.spreadCanvas.width * displayScale))}px`;
       this.canvasStage.style.height = `${Math.max(1, Math.round(this.spreadCanvas.height * displayScale))}px`;
+      this.canvasStage.classList.toggle("show-page-shadow", this.uiState.showPageBorder);
     }
     this.canvasWrap.dataset.mode = this.uiState.appMode;
     this.syncCanvasZoomUI();

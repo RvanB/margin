@@ -1413,9 +1413,9 @@ export class WebGPUSpreadRenderer {
       Math.round(scene.margins.pagePxW),
       Math.round(scene.margins.pagePxH),
       scene.display.paperColor,
+      scene.display.shadowTintColor || "",
       chromeColor,
       scene.showPlaceholder ? "1" : "0",
-      scene.showPageBorder ? "1" : "0",
       scene.showCenterLine ? "1" : "0",
       scene.sideStates.left.page ? "p" : "e",
       scene.sideStates.right.page ? "p" : "e",
@@ -1429,9 +1429,10 @@ export class WebGPUSpreadRenderer {
     const ctx = get2dContext(canvas);
 
     drawPageBorder(ctx, scene.margins.pagePxW, {
-      showBorder: scene.showPageBorder,
+      showBorder: false,
       showCenterLine: scene.showCenterLine,
       paperColor: scene.display.paperColor,
+      shadowTintColor: scene.display.shadowTintColor,
     });
     this.#markCanvasDirty(canvas);
     this.chromeCache.set(key, canvas);

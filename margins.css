@@ -975,6 +975,10 @@ input[type="range"]::-moz-range-progress {
   flex: none;
 }
 
+#canvas-stage.show-page-shadow {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+}
+
 #spread-canvas,
 #overlay-canvas {
   display: block;
