@@ -92,8 +92,7 @@ function buildSideStates(margins, pages, hasPlacedPages) {
   };
 }
 
-function measurePageDraw(page, rect, mode, alignX = "center", alignY = "center") {
-  const sourceCanvas = page?.displayCanvas;
+function measurePageDraw(page, rect, mode, alignX = "center", alignY = "center", sourceCanvas = page?.displayCanvas) {
   if (!sourceCanvas) return null;
 
   const crop = page.getCropFor(sourceCanvas);
@@ -375,6 +374,8 @@ export class WebGPUSpreadRenderer {
     this.ready = false;
     this.textureCache = new WeakMap();
     this.pageSurfaceCache = new WeakMap();
+    this.backFaceSurfaceCache = new WeakMap();
+    this.translucencySurfaceCache = new WeakMap();
     this.showThroughSurfaceCache = new WeakMap();
     this.sceneByCanvas = new WeakMap();
     this.chromeCache = new Map();
@@ -686,7 +687,9 @@ export class WebGPUSpreadRenderer {
               @group(0) @binding(1) var tex: texture_2d<f32>;
               @group(0) @binding(2) var<uniform> uniforms: Uniforms;
               @group(0) @binding(3) var showThroughTex: texture_2d<f32>;
-              @group(0) @binding(4) var paperTex: texture_2d<f32>;
+              @group(0) @binding(4) var backFaceTex: texture_2d<f32>;
+              @group(0) @binding(5) var translucencyTex: texture_2d<f32>;
+              @group(0) @binding(6) var paperTex: texture_2d<f32>;
 
               fn pointInQuad(hit: vec3<f32>, p0: vec3<f32>, p1: vec3<f32>, p3: vec3<f32>) -> bool {
                 let uAxis = p1 - p0;
@@ -878,11 +881,13 @@ export class WebGPUSpreadRenderer {
                 let texel = textureSample(tex, texSampler, input.uv);
                 let stUV = vec2<f32>(1.0 - input.pageUv.x, input.pageUv.y);
                 let showThroughTexel = textureSample(showThroughTex, texSampler, stUV);
+                let backFaceTexel = textureSample(backFaceTex, texSampler, stUV);
+                let translucencyTexel = textureSample(translucencyTex, texSampler, input.uv);
                 let paper = uniforms.paperColor.rgb;
                 let normal = normalize(input.worldNormal);
                 let frontVisible = normal.z >= 0.0;
-                let visibleTexel = select(showThroughTexel, texel, frontVisible);
-                let hiddenTexel = select(texel, showThroughTexel, frontVisible);
+                let visibleTexel = select(backFaceTexel, texel, frontVisible);
+                let hiddenTexel = select(translucencyTexel, showThroughTexel, frontVisible);
                 var content = unpremultiply(visibleTexel.rgb, visibleTexel.a);
                 content = applyNeutralize(content);
                 let selected = matchesSelection(content);
@@ -908,8 +913,9 @@ export class WebGPUSpreadRenderer {
                   sqrt(max(0.0001, 1.0 - curveTilt * curveTilt))
                 ));
                 let curvedNormal = normalize((uniforms.model * vec4<f32>(curvedLocal * uniforms.params.z, 0.0)).xyz);
-                let lightDir = vec3<f32>(0.0, 0.0, -1.0);
-                let diffuse = abs(dot(curvedNormal, lightDir));
+                let lightDir = vec3<f32>(0.0, 0.0, 1.0);
+                let lightingNormal = curvedNormal * select(-1.0, 1.0, frontVisible);
+                let diffuse = max(dot(lightingNormal, lightDir), 0.0);
                 let lightTint = mix(
                   srgbToLinear(uniforms.lightShadowColor.rgb),
                   srgbToLinear(uniforms.lightHighlightColor.rgb),
@@ -1378,6 +1384,10 @@ export class WebGPUSpreadRenderer {
     const textureResource = this.#getTextureResource(pageSurface);
     const showThroughCanvas = this.#getShowThroughSurfaceCanvas(scene, sideState, side);
     const showThroughResource = this.#getTextureResource(showThroughCanvas);
+    const backFaceCanvas = this.#getBackFaceSurfaceCanvas(scene, sideState, side);
+    const backFaceResource = this.#getTextureResource(backFaceCanvas);
+    const translucencyCanvas = this.#getTranslucencySurfaceCanvas(scene, sideState, side);
+    const translucencyResource = this.#getTextureResource(translucencyCanvas);
     const paperTextureResource = this.#getTextureResource(this.paperTextureCanvas);
     const gpuEffects = effectEntry?.gpu?.fragment || {
       neutralizeColor: null,
@@ -1446,7 +1456,9 @@ export class WebGPUSpreadRenderer {
         { binding: 1, resource: textureResource.view },
         { binding: 2, resource: { buffer: uniformBuffer } },
         { binding: 3, resource: showThroughResource.view },
-        { binding: 4, resource: paperTextureResource.view },
+        { binding: 4, resource: backFaceResource.view },
+        { binding: 5, resource: translucencyResource.view },
+        { binding: 6, resource: paperTextureResource.view },
       ],
     });
 
@@ -1458,14 +1470,27 @@ export class WebGPUSpreadRenderer {
   }
 
   #getPageSurfaceCanvas(scene, sideState, side) {
-    if (!sideState?.page) return null;
+    return this.#getRenderedPageSurfaceCanvas(scene, sideState, sideState.page?.displayCanvas, this.pageSurfaceCache);
+  }
+
+  #getTranslucencySurfaceCanvas(scene, sideState, side) {
+    const sourceCanvas = sideState?.page?.previewCanvas
+      ?? sideState?.page?.thumbnailSourceCanvas
+      ?? null;
+    if (!sourceCanvas) return this.emptyShowThroughCanvas;
+    return this.#getRenderedPageSurfaceCanvas(scene, sideState, sourceCanvas, this.translucencySurfaceCache);
+  }
+
+  #getRenderedPageSurfaceCanvas(scene, sideState, sourceCanvas, cacheStore) {
+    if (!sideState?.page || !sourceCanvas) return null;
 
     const measurement = measurePageDraw(
       sideState.page,
       sideState.contentRect,
       sideState.contentMode,
       sideState.contentAlignX,
-      sideState.contentAlignY
+      sideState.contentAlignY,
+      sourceCanvas
     );
     const surfaceScale = getPageSurfaceScale(sideState.pageRect, measurement, scene.previewZoom);
     const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
@@ -1474,7 +1499,7 @@ export class WebGPUSpreadRenderer {
       surfaceScale,
       MAX_PAGE_SURFACE_EDGE / Math.max(pageWidth, pageHeight)
     );
-    const surfaceCrop = sideState.page.getCropFor(sideState.page.displayCanvas);
+    const surfaceCrop = sideState.page.getCropFor(sourceCanvas);
     const drawKey = measurement
       ? [
         Math.round(sideState.pageRect.w),
@@ -1494,14 +1519,13 @@ export class WebGPUSpreadRenderer {
       ].join("|")
       : null;
 
-    let pageCache = this.pageSurfaceCache.get(sideState.page);
-    const sourceCanvas = sideState.page.displayCanvas;
+    let pageCache = cacheStore.get(sideState.page);
     if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
       pageCache = {
         srcCanvas: sourceCanvas,
         variants: new Map(),
       };
-      this.pageSurfaceCache.set(sideState.page, pageCache);
+      cacheStore.set(sideState.page, pageCache);
     }
 
     const cached = drawKey ? pageCache.variants.get(drawKey) : null;
@@ -1514,34 +1538,31 @@ export class WebGPUSpreadRenderer {
     ctx.scale(clampedSurfaceScale, clampedSurfaceScale);
 
     if (measurement) {
-      const sourceCanvas = sideState.page.displayCanvas;
-      if (sourceCanvas) {
-        if (measurement.clipRect) {
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(
-            Math.round(measurement.clipRect.x - sideState.pageRect.x),
-            Math.round(measurement.clipRect.y - sideState.pageRect.y),
-            Math.round(measurement.clipRect.w),
-            Math.round(measurement.clipRect.h)
-          );
-          ctx.clip();
-        }
-
-        ctx.drawImage(
-          sourceCanvas,
-          0,
-          0,
-          sourceCanvas.width,
-          sourceCanvas.height,
-          Math.round(measurement.drawRect.x - sideState.pageRect.x),
-          Math.round(measurement.drawRect.y - sideState.pageRect.y),
-          Math.round(measurement.drawRect.w),
-          Math.round(measurement.drawRect.h)
+      if (measurement.clipRect) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(
+          Math.round(measurement.clipRect.x - sideState.pageRect.x),
+          Math.round(measurement.clipRect.y - sideState.pageRect.y),
+          Math.round(measurement.clipRect.w),
+          Math.round(measurement.clipRect.h)
         );
-
-        if (measurement.clipRect) ctx.restore();
+        ctx.clip();
       }
+
+      ctx.drawImage(
+        sourceCanvas,
+        0,
+        0,
+        sourceCanvas.width,
+        sourceCanvas.height,
+        Math.round(measurement.drawRect.x - sideState.pageRect.x),
+        Math.round(measurement.drawRect.y - sideState.pageRect.y),
+        Math.round(measurement.drawRect.w),
+        Math.round(measurement.drawRect.h)
+      );
+
+      if (measurement.clipRect) ctx.restore();
     }
 
     if (drawKey) {
@@ -1558,13 +1579,28 @@ export class WebGPUSpreadRenderer {
   }
 
   #getShowThroughSurfaceCanvas(scene, sideState, side) {
-    const showThroughPage = sideState.showThroughPage ?? null;
-    if (!showThroughPage) return this.emptyShowThroughCanvas;
+    return this.#getReferencedPageSurfaceCanvas(
+      scene,
+      sideState,
+      side,
+      sideState.showThroughPage?.previewCanvas ?? sideState.showThroughPage?.thumbnailSourceCanvas ?? null,
+      this.showThroughSurfaceCache
+    );
+  }
 
-    const sourceCanvas = showThroughPage.displayCanvas
-      ?? showThroughPage.previewCanvas
-      ?? showThroughPage.srcCanvas;
-    if (!sourceCanvas) return this.emptyShowThroughCanvas;
+  #getBackFaceSurfaceCanvas(scene, sideState, side) {
+    return this.#getReferencedPageSurfaceCanvas(
+      scene,
+      sideState,
+      side,
+      sideState.showThroughPage?.displayCanvas ?? sideState.showThroughPage?.thumbnailSourceCanvas ?? null,
+      this.backFaceSurfaceCache
+    );
+  }
+
+  #getReferencedPageSurfaceCanvas(scene, sideState, side, sourceCanvas, cacheStore) {
+    const showThroughPage = sideState.showThroughPage ?? null;
+    if (!showThroughPage || !sourceCanvas) return this.emptyShowThroughCanvas;
 
     const crop = showThroughPage.getCropFor(sourceCanvas);
     const hiddenSide = side === "left" ? "right" : "left";
@@ -1587,13 +1623,13 @@ export class WebGPUSpreadRenderer {
       effectKey,
     ].join("|");
 
-    let pageCache = this.showThroughSurfaceCache.get(showThroughPage);
+    let pageCache = cacheStore.get(showThroughPage);
     if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
       pageCache = {
         srcCanvas: sourceCanvas,
         variants: new Map(),
       };
-      this.showThroughSurfaceCache.set(showThroughPage, pageCache);
+      cacheStore.set(showThroughPage, pageCache);
     }
 
     const cached = pageCache.variants.get(drawKey);

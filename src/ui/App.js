@@ -152,6 +152,9 @@ export class App {
     this.renderZoom = 1;
     this.previewRedrawTimer = 0;
     this.interactivePreviewTimer = 0;
+    this.pendingTurnStartToken = 0;
+    this.activeAnimationKeepSpreadIndexes = [];
+    this.pendingSettledKeepSpreadIndexes = [];
     this.exportingPages = false;
     this.exportProgress = { current: 0, total: 0, label: "" };
     this.loadingFiles = false;
@@ -1237,7 +1240,10 @@ export class App {
       this.book.pages.length &&
       (this.uiState.appMode === "content" || this.uiState.showLayoutContent)
     ) {
-      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
+      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, {
+        allowHighRes: false,
+        extraKeepSpreadIndexes: this.getLoaderKeepSpreadIndexes(this.uiState.currentSpread),
+      });
     }
 
     const spreadPages = this.getRenderableSpreadPages(this.uiState.currentSpread);
@@ -1651,6 +1657,12 @@ export class App {
 
     this.cancelQueuedSpreadTurns();
     const token = this.queuedSpreadTurnToken;
+    const queuedKeepSpreadIndexes = [];
+    const pathStart = Math.min(fromSpread, clampedTarget);
+    const pathEnd = Math.max(fromSpread, clampedTarget);
+    for (let spread = pathStart; spread <= pathEnd; spread += 1) {
+      queuedKeepSpreadIndexes.push(spread);
+    }
     const advance = () => {
       if (token !== this.queuedSpreadTurnToken) return;
       const currentSpread = this.getEffectiveSpread();
@@ -1662,6 +1674,8 @@ export class App {
       const isFinalStep = nextSpread === clampedTarget;
       this.navigateTo(nextSpread, isFinalStep ? preferredPageIndex : null, {
         fromQueuedJump: true,
+        isFinalQueuedStep: isFinalStep,
+        queuedKeepSpreadIndexes,
         selectPage: isFinalStep,
       });
       if (!isFinalStep) {
@@ -1693,9 +1707,27 @@ export class App {
     const clampedTarget = Math.max(0, Math.min(targetSpread, this.book.numSpreads() - 1));
     if (clampedTarget === this.getEffectiveSpread()) return;
     if (!options.fromQueuedJump) this.cancelQueuedSpreadTurns();
+    const fromSpread = this.getEffectiveSpread();
+    const direction = clampedTarget > fromSpread ? 1 : -1;
+    const targetPages = this.book.spreadPageEntries(clampedTarget);
+    const destinationTurningPageIndex = direction > 0
+      ? targetPages.left.pageIndex
+      : targetPages.right.pageIndex;
+    const shouldGateTurnStartHighRes = !options.fromQueuedJump || options.isFinalQueuedStep;
+    const queuedKeepSpreadIndexes = Array.isArray(options.queuedKeepSpreadIndexes)
+      ? options.queuedKeepSpreadIndexes
+      : [];
+    const extraKeepSpreadIndexes = [
+      ...(fromSpread >= 0 ? [fromSpread] : []),
+      ...queuedKeepSpreadIndexes,
+    ];
+    this.activeAnimationKeepSpreadIndexes = [...new Set(extraKeepSpreadIndexes)];
 
     this.endInteractiveContentPreview({ redraw: false });
-    this.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, { allowHighRes: false });
+    this.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, {
+      allowHighRes: false,
+      extraKeepSpreadIndexes,
+    });
     if (options.selectPage !== false) this.selectSpreadPage(clampedTarget, preferredPageIndex);
 
     if (!this.lastMargins || !this.book.pages.length) {
@@ -1709,35 +1741,53 @@ export class App {
       return;
     }
 
-    const fromSpread = this.getEffectiveSpread();
-    const direction = clampedTarget > fromSpread ? 1 : -1;
     if (this.spreadRenderer.isAnimating && this.animationDirection && direction !== this.animationDirection) return;
+    const turnStartToken = ++this.pendingTurnStartToken;
+    const startTurn = () => {
+      if (this.pendingTurnStartToken !== turnStartToken) return;
 
-    this.uiState.effectiveSpread = clampedTarget;
-    this.animationDirection = direction;
-    const fromCanvas = this.createSpreadSnapshot(fromSpread);
-    const toCanvas = this.createSpreadSnapshot(clampedTarget);
-    this.overlayCanvas.style.visibility = "hidden";
+      this.uiState.effectiveSpread = clampedTarget;
+      this.animationDirection = direction;
+      const fromCanvas = this.createSpreadSnapshot(fromSpread);
+      const toCanvas = this.createSpreadSnapshot(clampedTarget);
+      this.overlayCanvas.style.visibility = "hidden";
 
-    const onDone = this.animationCompletionScheduled
-      ? null
-      : () => {
-          this.animationCompletionScheduled = false;
-          this.animationDirection = 0;
-          this.uiState.currentSpread = this.uiState.effectiveSpread;
-          this.overlayCanvas.style.visibility = "";
-          this.redraw();
-          this.schedulePreviewRedraw();
-        };
+      const onDone = this.animationCompletionScheduled
+        ? null
+        : () => {
+            this.animationCompletionScheduled = false;
+            this.animationDirection = 0;
+            this.uiState.currentSpread = this.uiState.effectiveSpread;
+            this.activeAnimationKeepSpreadIndexes = [];
+            this.pendingSettledKeepSpreadIndexes = [...extraKeepSpreadIndexes];
+            this.overlayCanvas.style.visibility = "";
+            this.redraw();
+            this.schedulePreviewRedraw();
+          };
 
-    this.animationCompletionScheduled = true;
-    this.spreadRenderer.animateTo(fromCanvas, toCanvas, direction, onDone);
-    this.schedulePreviewRedraw();
-    this.pageStrip.update(this.book, {
-      ...this.uiState,
-      selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
-      effectiveSpread: this.uiState.effectiveSpread,
-    }, this.spreadRenderer);
+      this.animationCompletionScheduled = true;
+      this.spreadRenderer.animateTo(fromCanvas, toCanvas, direction, onDone);
+      this.schedulePreviewRedraw();
+      this.pageStrip.update(this.book, {
+        ...this.uiState,
+        selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
+        effectiveSpread: this.uiState.effectiveSpread,
+      }, this.spreadRenderer);
+    };
+
+    if (
+      shouldGateTurnStartHighRes
+      && (
+      destinationTurningPageIndex >= 0
+      && !this.lazyPageLoader.isPageHighResReady(destinationTurningPageIndex, this.contentZoom)
+      )
+    ) {
+      this.lazyPageLoader.ensurePageHighRes(destinationTurningPageIndex, this.contentZoom)
+        .then(() => startTurn());
+      return;
+    }
+
+    startTurn();
   }
 
   createSpreadSnapshot(spreadIndex, scaleOverride = null) {
@@ -1876,19 +1926,53 @@ export class App {
     this.schedulePreviewRedraw();
   }
 
+  isSpreadHighResReady(spreadIndex, previewZoom = this.contentZoom) {
+    if (spreadIndex < 0 || spreadIndex >= this.book.numSpreads()) return true;
+    const { left, right } = this.book.spreadPageEntries(spreadIndex);
+    return [left.pageIndex, right.pageIndex]
+      .filter(index => index >= 0)
+      .every(index => this.lazyPageLoader.isPageHighResReady(index, previewZoom));
+  }
+
+  getLoaderKeepSpreadIndexes(targetSpread = this.getEffectiveSpread()) {
+    const keep = new Set([
+      ...this.pendingSettledKeepSpreadIndexes,
+      ...this.activeAnimationKeepSpreadIndexes,
+    ]);
+    if (targetSpread >= 0) keep.add(targetSpread);
+    if (this.uiState.currentSpread >= 0) keep.add(this.uiState.currentSpread);
+    if (this.spreadRenderer.isAnimating && this.uiState.effectiveSpread >= 0) {
+      keep.add(this.uiState.effectiveSpread);
+    }
+    return [...keep];
+  }
+
   schedulePreviewRedraw() {
     if (this.previewRedrawTimer) clearTimeout(this.previewRedrawTimer);
     this.previewRedrawTimer = setTimeout(() => {
       this.previewRedrawTimer = 0;
       const targetSpread = this.getEffectiveSpread();
+      const pendingSettledKeepSpreadIndexes = [...this.pendingSettledKeepSpreadIndexes];
+      const pendingKeepSpreadIndexes = this.getLoaderKeepSpreadIndexes(targetSpread);
       if (this.book.pages.length) {
-        this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
+        this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, {
+          allowHighRes: true,
+          extraKeepSpreadIndexes: pendingKeepSpreadIndexes,
+        });
+        const canTrimSettledKeep = pendingSettledKeepSpreadIndexes.length
+          && !this.spreadRenderer.isAnimating
+          && targetSpread === this.uiState.currentSpread
+          && this.isSpreadHighResReady(targetSpread, this.contentZoom);
+        if (canTrimSettledKeep) {
+          this.pendingSettledKeepSpreadIndexes = [];
+          this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
+        }
       }
       const nextRenderZoom = this.getSafeRenderZoom(this.contentZoom);
       if (Math.abs(this.renderZoom - nextRenderZoom) < 0.0001) return;
       this.renderZoom = nextRenderZoom;
       this.redraw();
-    }, 500);
+    }, 100);
   }
 
   printCurrentSpread() {

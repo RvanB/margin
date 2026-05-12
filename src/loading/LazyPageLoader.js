@@ -16,10 +16,42 @@ export class LazyPageLoader {
     this.previewQueue = [];
     this.previewQueued = new Set();
     this.previewRendering = false;
+    this.pageReadyWaiters = new Map();
   }
 
   #getHighResPixelRatio() {
     return Math.max(1, globalThis.devicePixelRatio || 1);
+  }
+
+  #getTargetPdfRenderScale(previewZoom = 1) {
+    return this.pdfRenderScale
+      * Math.max(1, previewZoom || 1)
+      * this.#getHighResPixelRatio();
+  }
+
+  #getRequiredPageRenderScale(pageIndex, previewZoom = 1) {
+    const page = this.book.pages[pageIndex];
+    if (!page || page.source?.type !== "pdf") return 0;
+    const minimumHighResScale = this.pdfRenderScale * this.#getHighResPixelRatio();
+    return Math.max(
+      minimumHighResScale,
+      this.#getTargetPdfRenderScale(previewZoom)
+    ) * 1.5;
+  }
+
+  #resolvePageReadyWaiters(pageIndex) {
+    const waiters = this.pageReadyWaiters.get(pageIndex);
+    if (!waiters?.length) return;
+    const pending = [];
+    for (const waiter of waiters) {
+      if (this.isPageHighResReady(pageIndex, waiter.previewZoom)) {
+        waiter.resolve(true);
+      } else {
+        pending.push(waiter);
+      }
+    }
+    if (pending.length) this.pageReadyWaiters.set(pageIndex, pending);
+    else this.pageReadyWaiters.delete(pageIndex);
   }
 
   reset() {
@@ -31,22 +63,24 @@ export class LazyPageLoader {
     this.previewRendering = false;
   }
 
-  #buildKeepSet(spreadIndex) {
+  #buildKeepSet(spreadIndex, extraSpreadIndexes = []) {
     const keep = new Set();
-    const { left, right } = this.book.spreadPageEntries(spreadIndex);
-    if (left.pageIndex >= 0) keep.add(left.pageIndex);
-    if (right.pageIndex >= 0) keep.add(right.pageIndex);
+    const spreads = new Set([spreadIndex, ...extraSpreadIndexes]);
+    for (const keptSpreadIndex of spreads) {
+      if (keptSpreadIndex < 0 || keptSpreadIndex >= this.book.numSpreads()) continue;
+      const { left, right } = this.book.spreadPageEntries(keptSpreadIndex);
+      if (left.pageIndex >= 0) keep.add(left.pageIndex);
+      if (right.pageIndex >= 0) keep.add(right.pageIndex);
+    }
     return keep;
   }
 
-  ensureSpreadLoaded(spreadIndex, previewZoom = 1, { allowHighRes = true } = {}) {
+  ensureSpreadLoaded(spreadIndex, previewZoom = 1, { allowHighRes = true, extraKeepSpreadIndexes = [] } = {}) {
     this.lastEnsuredSpread = spreadIndex;
     this.lastEnsuredPreviewZoom = Math.max(1, previewZoom || 1);
-    const targetPdfRenderScale = this.pdfRenderScale
-      * this.lastEnsuredPreviewZoom
-      * this.#getHighResPixelRatio();
+    const targetPdfRenderScale = this.#getTargetPdfRenderScale(this.lastEnsuredPreviewZoom);
     const spreadCount = this.book.numSpreads();
-    const keep = this.#buildKeepSet(spreadIndex);
+    const keep = this.#buildKeepSet(spreadIndex, extraKeepSpreadIndexes);
     this.keepPageIndexes = keep;
     for (
       let spread = Math.max(0, spreadIndex - 1);
@@ -77,6 +111,31 @@ export class LazyPageLoader {
     for (let pageIndex = 0; pageIndex < this.book.pages.length; pageIndex += 1) {
       this.#ensurePreviewLoaded(pageIndex);
     }
+  }
+
+  ensurePageHighRes(pageIndex, previewZoom = 1) {
+    if (pageIndex < 0 || pageIndex >= this.book.pages.length) return Promise.resolve(false);
+    const targetPdfRenderScale = this.#getTargetPdfRenderScale(previewZoom);
+    this.#ensurePreviewLoaded(pageIndex, true);
+    const loadPromise = this.#ensurePageLoaded(pageIndex, targetPdfRenderScale);
+    if (this.isPageHighResReady(pageIndex, previewZoom)) return Promise.resolve(true);
+    return new Promise(resolve => {
+      const waiters = this.pageReadyWaiters.get(pageIndex) || [];
+      waiters.push({ previewZoom, resolve });
+      this.pageReadyWaiters.set(pageIndex, waiters);
+      Promise.resolve(loadPromise).then(() => this.#resolvePageReadyWaiters(pageIndex));
+    });
+  }
+
+  isPageHighResReady(pageIndex, previewZoom = 1) {
+    const page = this.book.pages[pageIndex];
+    if (!page) return false;
+    if (page.source?.type === "image") {
+      return !!page.srcCanvas;
+    }
+    if (page.source?.type !== "pdf") return !!page.displayCanvas;
+    const requiredScale = this.#getRequiredPageRenderScale(pageIndex, previewZoom);
+    return !!page.srcCanvas && (page.loadedPdfRenderScale || 0) >= requiredScale;
   }
 
   #ensurePreviewLoaded(pageIndex, prioritize = false) {
@@ -110,6 +169,7 @@ export class LazyPageLoader {
           previewSource.height = 0;
         }
         this.onPageReady?.(pageIndex);
+        this.#resolvePageReadyWaiters(pageIndex);
       } catch (error) {
         console.error(`Failed to render PDF preview ${page.source?.pageNum}:`, error);
       }
@@ -163,6 +223,7 @@ export class LazyPageLoader {
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
       this.onPageReady?.(pageIndex);
+      this.#resolvePageReadyWaiters(pageIndex);
       this.#requestSpreadCleanupIfReady(pageIndex, requestedScale);
       if ((page.requestedPdfRenderScale || renderScale) > renderScale + 1e-3) {
         setTimeout(() => this.#ensurePageLoaded(pageIndex, page.requestedPdfRenderScale), 0);
@@ -190,6 +251,7 @@ export class LazyPageLoader {
       page.aspectRatio = canvas.width / canvas.height;
       page.loading = false;
       this.onPageReady?.(pageIndex);
+      this.#resolvePageReadyWaiters(pageIndex);
     } catch (error) {
       page.loading = false;
       console.error(`Failed to load image page ${page.source?.file?.name || pageIndex}:`, error);
