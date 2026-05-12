@@ -1,4 +1,4 @@
-import { drawPageBorder } from "./primitives.js";
+import { drawPageBorder, getPageChromeColor } from "./primitives.js";
 import { SpreadRenderer } from "./SpreadRenderer.js";
 import { getPageGeometry } from "./layout.js";
 
@@ -1406,10 +1406,12 @@ export class WebGPUSpreadRenderer {
   }
 
   #getChromeCanvas(scene) {
+    const chromeColor = getPageChromeColor(scene.display.paperColor);
     const key = [
       Math.round(scene.margins.pagePxW),
       Math.round(scene.margins.pagePxH),
       scene.display.paperColor,
+      chromeColor,
       scene.showPlaceholder ? "1" : "0",
       scene.showCenterLine ? "1" : "0",
       scene.sideStates.left.page ? "p" : "e",
@@ -1423,7 +1425,10 @@ export class WebGPUSpreadRenderer {
     canvas.height = Math.round(scene.margins.pagePxH);
     const ctx = get2dContext(canvas);
 
-    drawPageBorder(ctx, scene.margins.pagePxW, { showCenterLine: scene.showCenterLine });
+    drawPageBorder(ctx, scene.margins.pagePxW, {
+      showCenterLine: scene.showCenterLine,
+      paperColor: scene.display.paperColor,
+    });
     this.#markCanvasDirty(canvas);
     this.chromeCache.set(key, canvas);
     if (this.chromeCache.size > 16) {

@@ -355,6 +355,8 @@ export class App {
       background: normalizeHexColor(nextColors.background, this.interfaceColors.background),
     };
     this.applyInterfaceColors();
+    this.spreadRenderer?.chromeCache?.clear?.();
+    this.redraw();
   }
 
   showInterfaceColorsModal() {
@@ -1245,7 +1247,9 @@ export class App {
     this.syncCanvasStage();
 
     if (!this.spreadRenderer.isAnimating) {
-      renderOverlay(this.overlayCtx, margins, this.uiState);
+      renderOverlay(this.overlayCtx, margins, this.uiState, {
+        paperColor: this.book.display.paperColor,
+      });
     }
 
     this.pageStrip.update(this.book, {
@@ -1688,6 +1692,8 @@ export class App {
         ...this.uiState,
         spreadRects: null,
         spreadSideStates: sideStates,
+      }, {
+        paperColor: this.book.display.paperColor,
       });
       const composite = document.createElement("canvas");
       composite.width = snapshot.width;
@@ -1830,6 +1836,8 @@ export class App {
       ...this.uiState,
       spreadRects: null,
       spreadSideStates: sideStates,
+    }, {
+      paperColor: this.book.display.paperColor,
     });
 
     const composite = document.createElement("canvas");

@@ -44,6 +44,7 @@ export class SpreadRenderer {
     this.canvas.height = Math.round(margins.pagePxH);
     this.ctx = get2dContext(this.canvas);
     this.showCenterLine = options.showCenterLine !== false;
+    this.paperColor = display?.paperColor || null;
     return this.#paint(this.canvas, pages, margins, effects, display, options);
   }
 
@@ -52,6 +53,7 @@ export class SpreadRenderer {
     offscreen.width = Math.round(2 * margins.pagePxW);
     offscreen.height = Math.round(margins.pagePxH);
     this.showCenterLine = options.showCenterLine !== false;
+    this.paperColor = display?.paperColor || null;
     const result = this.#paint(offscreen, pages, margins, effects, display, options);
     return { canvas: offscreen, ...result };
   }
@@ -181,7 +183,10 @@ export class SpreadRenderer {
       }
     }
 
-    drawPageBorder(ctx, margins.pagePxW, { showCenterLine: options.showCenterLine !== false });
+    drawPageBorder(ctx, margins.pagePxW, {
+      showCenterLine: options.showCenterLine !== false,
+      paperColor: display.paperColor,
+    });
 
     return {
       spreadRects: {
@@ -470,7 +475,10 @@ export class SpreadRenderer {
       }
     }
 
-    drawPageBorder(this.ctx, pageWidth, { showCenterLine: this.showCenterLine !== false });
+    drawPageBorder(this.ctx, pageWidth, {
+      showCenterLine: this.showCenterLine !== false,
+      paperColor: this.paperColor,
+    });
     this.animations = remaining;
 
     if (remaining.length) {

@@ -17,12 +17,59 @@ function getInterfaceForeground() {
   return value || "#000000";
 }
 
-export function drawPageBorder(ctx, pagePxW, { showCenterLine = true } = {}) {
+function getInterfaceBackground() {
+  const value = globalThis.getComputedStyle?.(document.documentElement)
+    ?.getPropertyValue("--ui-background")
+    ?.trim();
+  return value || "#ffffff";
+}
+
+function hexToRgb(hex, fallback = [0, 0, 0]) {
+  if (typeof hex !== "string" || !/^#[0-9a-fA-F]{6}$/.test(hex)) return fallback;
+  return [
+    parseInt(hex.slice(1, 3), 16) / 255,
+    parseInt(hex.slice(3, 5), 16) / 255,
+    parseInt(hex.slice(5, 7), 16) / 255,
+  ];
+}
+
+function relativeLuminance([r, g, b]) {
+  const convert = channel => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  const [lr, lg, lb] = [convert(r), convert(g), convert(b)];
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+}
+
+function contrastRatio(a, b) {
+  const l1 = relativeLuminance(hexToRgb(a));
+  const l2 = relativeLuminance(hexToRgb(b));
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+export function getPageChromeColor(paperColor) {
+  const foreground = getInterfaceForeground();
+  const background = getInterfaceBackground();
+  const paper = typeof paperColor === "string" && /^#[0-9a-fA-F]{6}$/.test(paperColor)
+    ? paperColor
+    : "#ffffff";
+  return contrastRatio(foreground, paper) >= contrastRatio(background, paper) ? foreground : background;
+}
+
+function getPageChromeFillColor(paperColor) {
+  const foreground = getInterfaceForeground();
+  const background = getInterfaceBackground();
+  const chrome = getPageChromeColor(paperColor);
+  return chrome === foreground ? background : foreground;
+}
+
+export function drawPageBorder(ctx, pagePxW, { showCenterLine = true, paperColor = null } = {}) {
+  const chromeColor = getPageChromeColor(paperColor);
   const canvasWidth = ctx.canvas.width;
   const canvasHeight = ctx.canvas.height;
   const mid = Math.round(pagePxW);
   ctx.save();
-  ctx.strokeStyle = getInterfaceForeground();
+  ctx.strokeStyle = chromeColor;
   ctx.lineWidth = 1;
   ctx.strokeRect(0.5, 0.5, canvasWidth - 1, canvasHeight - 1);
   if (showCenterLine) {
@@ -35,7 +82,7 @@ export function drawPageBorder(ctx, pagePxW, { showCenterLine = true } = {}) {
   ctx.restore();
 }
 
-function hArrowLabel(ctx, x1, x2, y, text, fontSize) {
+function hArrowLabel(ctx, x1, x2, y, text, fontSize, color) {
   const pad = fontSize * 0.5;
   const midX = Math.round((x1 + x2) / 2);
   const textWidth = ctx.measureText(text).width;
@@ -44,7 +91,7 @@ function hArrowLabel(ctx, x1, x2, y, text, fontSize) {
   const snappedY = Math.round(y) + 0.5;
 
   ctx.save();
-  ctx.strokeStyle = "#000";
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(Math.round(x1), snappedY);
@@ -67,14 +114,14 @@ function hArrowLabel(ctx, x1, x2, y, text, fontSize) {
   ctx.lineTo(Math.round(x2) - arrowW, snappedY + arrowH);
   ctx.stroke();
 
-  ctx.fillStyle = "#000";
+  ctx.fillStyle = color;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, midX, snappedY);
   ctx.restore();
 }
 
-function bracketLabel(ctx, x, y1, y2, text, fontSize) {
+function bracketLabel(ctx, x, y1, y2, text, fontSize, color) {
   const snappedX = Math.round(x) + 0.5;
   const topY = Math.round(y1);
   const bottomY = Math.round(y2);
@@ -84,7 +131,7 @@ function bracketLabel(ctx, x, y1, y2, text, fontSize) {
   const arrowH = Math.round(fontSize * 0.6);
 
   ctx.save();
-  ctx.strokeStyle = "#000";
+  ctx.strokeStyle = color;
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(snappedX, topY);
@@ -107,14 +154,15 @@ function bracketLabel(ctx, x, y1, y2, text, fontSize) {
   ctx.lineTo(snappedX + arrowW, bottomY - arrowH);
   ctx.stroke();
 
-  ctx.fillStyle = "#000";
+  ctx.fillStyle = color;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, snappedX, midY);
   ctx.restore();
 }
 
-export function drawVdG(ctx, pagePxW, pagePxH) {
+export function drawVdG(ctx, pagePxW, pagePxH, { paperColor = null } = {}) {
+  const chromeColor = getPageChromeColor(paperColor);
   const w = Math.round(pagePxW);
   const h = Math.round(pagePxH);
 
@@ -126,7 +174,7 @@ export function drawVdG(ctx, pagePxW, pagePxH) {
   }
 
   ctx.save();
-  ctx.strokeStyle = "#000";
+  ctx.strokeStyle = chromeColor;
   ctx.lineWidth = 1;
   ctx.setLineDash([1, 2]);
   line(0, 0, 2 * w, h);
@@ -148,8 +196,9 @@ export function drawVdG(ctx, pagePxW, pagePxH) {
   ctx.restore();
 }
 
-export function drawMarginOverlay(ctx, side, margins, fontSize) {
+export function drawMarginOverlay(ctx, side, margins, fontSize, { paperColor = null } = {}) {
   if (!side?.overlayVisible) return;
+  const chromeColor = getPageChromeColor(paperColor);
 
   const { pageRect } = side;
   const overlayRect = side.overlayRect || side.textblockRect || side.contentRect;
@@ -165,53 +214,58 @@ export function drawMarginOverlay(ctx, side, margins, fontSize) {
   const inner = side.side === "left" ? rightGap : leftGap;
 
   ctx.save();
-  ctx.strokeStyle = "#000";
+  ctx.strokeStyle = chromeColor;
   ctx.lineWidth = 1;
   ctx.setLineDash([1, 2]);
   snappedStrokeRect(ctx, overlayRect.x, overlayRect.y, overlayRect.w, overlayRect.h);
   ctx.restore();
 
   if (side.side === "left") {
-    hArrowLabel(ctx, pageRect.x, overlayRect.x, midY, `${outer.toFixed(2)}″`, fontSize);
+    hArrowLabel(ctx, pageRect.x, overlayRect.x, midY, `${outer.toFixed(2)}″`, fontSize, chromeColor);
     hArrowLabel(
       ctx,
       overlayRect.x + overlayRect.w,
       pageRect.x + pageRect.w,
       midY,
       `${inner.toFixed(2)}″`,
-      fontSize
+      fontSize,
+      chromeColor
     );
   } else {
-    hArrowLabel(ctx, pageRect.x, overlayRect.x, midY, `${inner.toFixed(2)}″`, fontSize);
+    hArrowLabel(ctx, pageRect.x, overlayRect.x, midY, `${inner.toFixed(2)}″`, fontSize, chromeColor);
     hArrowLabel(
       ctx,
       overlayRect.x + overlayRect.w,
       pageRect.x + pageRect.w,
       midY,
       `${outer.toFixed(2)}″`,
-      fontSize
+      fontSize,
+      chromeColor
     );
   }
 
-  bracketLabel(ctx, labelX, pageRect.y, overlayRect.y, `${top.toFixed(2)}″`, fontSize);
+  bracketLabel(ctx, labelX, pageRect.y, overlayRect.y, `${top.toFixed(2)}″`, fontSize, chromeColor);
   bracketLabel(
     ctx,
     labelX,
     overlayRect.y + overlayRect.h,
     pageRect.y + pageRect.h,
     `${bottom.toFixed(2)}″`,
-    fontSize
+    fontSize,
+    chromeColor
   );
 }
 
-export function drawCropHandles(ctx, rect, hoverEdge = null) {
+export function drawCropHandles(ctx, rect, hoverEdge = null, { paperColor = null } = {}) {
   if (!rect) return;
+  const chromeColor = getPageChromeColor(paperColor);
+  const fillColor = getPageChromeFillColor(paperColor);
 
   const thickness = CROP_HANDLE_THICK;
   const length = CROP_HANDLE_LEN;
 
   ctx.save();
-  ctx.strokeStyle = "#000";
+  ctx.strokeStyle = chromeColor;
   ctx.lineWidth = 1;
   snappedStrokeRect(ctx, rect.x, rect.y, rect.w, rect.h);
 
@@ -236,11 +290,11 @@ export function drawCropHandles(ctx, rect, hoverEdge = null) {
     ctx.rect(handle.x, handle.y, handle.w, handle.h);
     ctx.clip();
 
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = fillColor;
     ctx.fillRect(handle.x, handle.y, handle.w, handle.h);
 
     if (!hovered) {
-      ctx.fillStyle = "#000";
+      ctx.fillStyle = chromeColor;
       if (handle.axis === "h") {
         for (let i = 0; i < handle.h; i += 2) {
           ctx.fillRect(handle.x, handle.y + i, handle.w, 1);
@@ -252,7 +306,7 @@ export function drawCropHandles(ctx, rect, hoverEdge = null) {
       }
     }
 
-    ctx.strokeStyle = "#000";
+    ctx.strokeStyle = chromeColor;
     ctx.lineWidth = 1;
     ctx.strokeRect(handle.x + 0.5, handle.y + 0.5, handle.w - 1, handle.h - 1);
     ctx.restore();
