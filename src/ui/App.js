@@ -432,7 +432,15 @@ export class App {
     // delay the perceived swap by ~5–30 ms.
     const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
     const isOnCurrentSpread = pageIndex === left.pageIndex || pageIndex === right.pageIndex;
-    if (isOnCurrentSpread) this.redraw();
+    if (isOnCurrentSpread) {
+      // Catch renderZoom up to contentZoom now that a sharper bitmap is in
+      // hand. Doing this *before* the redraw means the surface canvases are
+      // built once at the new dims with the new bitmap, instead of redrawing
+      // at the old renderZoom and then redrawing again from
+      // schedulePreviewRedraw.
+      this.zoomController.applySafeRenderZoom();
+      this.redraw();
+    }
     this.placedPreviewManager.refresh(pageIndex);
     this.pageStrip.updateThumbnail(pageIndex, page);
     if (isOnCurrentSpread) this.schedulePreviewRedraw();

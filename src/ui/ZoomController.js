@@ -74,24 +74,28 @@ export class ZoomController {
 
     this.contentZoom = nextZoom;
     // Update the canvas's CSS dimensions immediately so the existing pixel
-    // buffer is shown stretched to the new zoom (cheap, just CSS). The
-    // higher-res re-render + texture upload would block the click's paint
-    // if done synchronously — schedule it as an idle task so the browser
-    // paints the CSS-zoomed frame first.
+    // buffer is shown stretched (or shrunk) to the new zoom. No redraw and
+    // no renderZoom change here — the existing surface textures stay in
+    // place and WebGPU bilinearly samples them onto the new pageRect. When
+    // higher-res bitmaps land via the worker, App.onPageReady updates
+    // renderZoom and redraws against the new bitmap.
     this.syncCanvasStage();
     requestAnimationFrame(() => {
       canvasArea.scrollLeft = Math.max(0, centerX * zoomRatio - viewportWidth / 2);
       canvasArea.scrollTop = Math.max(0, centerY * zoomRatio - viewportHeight / 2);
     });
-    // requestIdleCallback runs after the browser has painted the click
-    // frame; the 80 ms timeout ensures the sharp upgrade still lands
-    // quickly on busy main threads. Falls back to setTimeout for Safari
-    // which historically lacked requestIdleCallback.
-    const runPreviewRedraw = () => this.app.schedulePreviewRedraw();
-    if (typeof globalThis.requestIdleCallback === "function") {
-      globalThis.requestIdleCallback(runPreviewRedraw, { timeout: 80 });
-    } else {
-      setTimeout(runPreviewRedraw, 0);
+    this.#requestHighResAtCurrentZoom();
+  }
+
+  #requestHighResAtCurrentZoom() {
+    const app = this.app;
+    const targetSpread = app.navigationController.getEffectiveSpread();
+    if (targetSpread < 0 || targetSpread >= app.book.numSpreads()) return;
+    const { left, right } = app.book.spreadPageEntries(targetSpread);
+    for (const pageIndex of [left.pageIndex, right.pageIndex]) {
+      if (pageIndex < 0) continue;
+      if (app.lazyPageLoader.isPageHighResReady(pageIndex, this.contentZoom)) continue;
+      app.lazyPageLoader.ensurePageHighRes(pageIndex, this.contentZoom);
     }
   }
 

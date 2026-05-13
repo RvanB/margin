@@ -23,7 +23,7 @@ function closeBitmap(bitmap) {
 export class LazyPageLoader {
   constructor(book, onPageReady, {
     maxHighResPages = 8,
-    pdfRenderScale = 1,
+    pdfRenderScale = 1.5,
     pdfPreviewSourceScale = 0.25,
     pdfPreviewMaxEdge = SHARED_PREVIEW_SIZE,
   } = {}) {

@@ -1,6 +1,12 @@
 const PDFJS_URL = "https://unpkg.com/pdfjs-dist@5.6.205/build/pdf.mjs";
 const PDF_WORKER_URL = "https://unpkg.com/pdfjs-dist@5.6.205/build/pdf.worker.mjs";
 
+// Hard cap on OffscreenCanvas dimensions used for pdf.js rendering. Higher
+// values risk hitting GPU-dependent canvas size limits in Firefox/Safari
+// (e.g. ~11k px per edge on typical Firefox systems, smaller on iOS) which
+// would put the canvas into an error state and break the draw loop.
+const MAX_PDF_RENDER_EDGE = 8192;
+
 // pdf.js reaches for `globalThis.document.createElement("canvas")` in a few
 // places that bypass its CanvasFactory. Inside a worker we install a minimal
 // shim that hands back OffscreenCanvas-shaped objects for those code paths.
@@ -446,9 +452,21 @@ const handlers = {
 
   async renderPage({ docId, pageNum, scale, downscaleTo = 0 }) {
     return withPdfPage(docId, pageNum, async page => {
-      const viewport = page.getViewport({ scale });
-      const renderWidth = Math.max(1, Math.round(viewport.width));
-      const renderHeight = Math.max(1, Math.round(viewport.height));
+      // Cap the requested scale so the resulting OffscreenCanvas never
+      // exceeds MAX_PDF_RENDER_EDGE per side. Firefox in particular puts
+      // an OffscreenCanvas into a permanent error state when constructed
+      // above its (GPU-dependent) max size, which then causes pdf.js's
+      // draw loop to fail with "Canvas is already in error state".
+      const rawViewport = page.getViewport({ scale });
+      const rawMaxEdge = Math.max(rawViewport.width, rawViewport.height);
+      const effectiveScale = rawMaxEdge > MAX_PDF_RENDER_EDGE
+        ? scale * (MAX_PDF_RENDER_EDGE / rawMaxEdge)
+        : scale;
+      const viewport = effectiveScale === scale
+        ? rawViewport
+        : page.getViewport({ scale: effectiveScale });
+      const renderWidth = Math.max(1, Math.min(MAX_PDF_RENDER_EDGE, Math.round(viewport.width)));
+      const renderHeight = Math.max(1, Math.min(MAX_PDF_RENDER_EDGE, Math.round(viewport.height)));
       const renderCanvas = new OffscreenCanvas(renderWidth, renderHeight);
       const renderCtx = renderCanvas.getContext("2d");
       await page.render({ canvasContext: renderCtx, viewport }).promise;
