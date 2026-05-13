@@ -2,7 +2,7 @@ import {
   drawCropHandles,
   drawMarginOverlay,
   drawVdG,
-} from "./primitives.js";
+} from "../viewer/rendering/primitives.js";
 
 export function renderOverlay(ctx, margins, uiState, { paperColor = null } = {}) {
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);

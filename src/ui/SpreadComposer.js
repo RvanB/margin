@@ -1,6 +1,6 @@
 import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
-import { computeMargins } from "../rendering/layout.js";
-import { renderOverlay } from "../rendering/OverlayRenderer.js";
+import { computeMargins } from "../viewer/rendering/layout.js";
+import { renderOverlay } from "./OverlayRenderer.js";
 
 export class SpreadComposer {
   constructor(app) {

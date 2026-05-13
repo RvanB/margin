@@ -1,5 +1,5 @@
-import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
-import { loadImageFile } from "./imageLoader.js";
+import { SHARED_PREVIEW_SIZE } from "../../previewSizing.js";
+import { loadImageFile } from "../../loading/imageLoader.js";
 import { renderPdfPage, requestPdfDocumentCleanup } from "./pdfLoader.js";
 
 function closeBitmap(bitmap) {

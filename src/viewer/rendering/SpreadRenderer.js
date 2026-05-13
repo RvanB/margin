@@ -2,8 +2,8 @@ import {
   drawDirectionalLightFalloff,
 } from "./primitives.js";
 import { drawPaperTextureOverlay, getPaperTextureCanvasSync, loadPaperTextureCanvas } from "./paperTexture.js";
-import { applyEffectsToCanvas } from "../effects/pipeline.js";
-import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
+import { applyEffectsToCanvas } from "../../effects/pipeline.js";
+import { SHARED_PREVIEW_SIZE } from "../../previewSizing.js";
 import { computeMargins, getPageGeometry } from "./layout.js";
 
 const TURN_EASING_POWER = 3;

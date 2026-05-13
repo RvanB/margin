@@ -1,19 +1,16 @@
 import { Book } from "../model/Book.js";
-import { LazyPageLoader } from "../loading/LazyPageLoader.js";
-import { computeMargins } from "../rendering/layout.js";
-import { renderOverlay } from "../rendering/OverlayRenderer.js";
-import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
-import { PageStrip } from "./PageStrip.js";
+import { BookViewer } from "../viewer/BookViewer.js";
+import { computeMargins } from "../viewer/rendering/layout.js";
+import { renderOverlay } from "./OverlayRenderer.js";
+import { SpreadRenderer } from "../viewer/rendering/SpreadRenderer.js";
 import { BusyIndicator } from "./BusyIndicator.js";
 import { CanvasInteraction } from "./CanvasInteraction.js";
 import { ExportController } from "./ExportController.js";
 import { InterfaceColors } from "./InterfaceColors.js";
 import { ModalManager } from "./ModalManager.js";
-import { NavigationController } from "./NavigationController.js";
 import { PlacedPreviewManager } from "./PlacedPreviewManager.js";
 import { SpreadComposer } from "./SpreadComposer.js";
 import { ToolbarController } from "./ToolbarController.js";
-import { ZoomController } from "./ZoomController.js";
 import {
   applyProjectDataToBook,
   downloadProjectJson,
@@ -69,16 +66,25 @@ export class App {
     };
     this.busyIndicator = new BusyIndicator();
     this.lastMargins = computeMargins(this.book.layout, 1);
-    this.spreadRenderer = new rendererClass(spreadCanvas);
+    this.bookViewer = new BookViewer({
+      spreadCanvas,
+      stripContainer,
+      rendererClass,
+      app: this,
+      pageStripCallbacks: {
+        onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
+        getEffectEntry: page => this.getEffectEntry(page),
+        getDisplay: () => this.book.display,
+        getLayout: () => this.book.layout,
+      },
+    });
+    this.spreadRenderer = this.bookViewer.spreadRenderer;
+    this.lazyPageLoader = this.bookViewer.lazyPageLoader;
+    this.pageStrip = this.bookViewer.pageStrip;
+    this.navigationController = this.bookViewer.navigationController;
+    this.zoomController = this.bookViewer.zoomController;
     globalThis.__rendererBackend = this.spreadRenderer.backendName;
     document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
-    this.lazyPageLoader = new LazyPageLoader(this.book, pageIndex => this.onPageReady(pageIndex));
-    this.pageStrip = new PageStrip(stripContainer, {
-      onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
-      getEffectEntry: page => this.getEffectEntry(page),
-      getDisplay: () => this.book.display,
-      getLayout: () => this.book.layout,
-    });
     this.exportController = new ExportController({
       book: this.book,
       spreadRenderer: this.spreadRenderer,
@@ -87,8 +93,6 @@ export class App {
       getEffectEntry: page => this.getEffectEntry(page),
     });
     this.canvasInteraction = new CanvasInteraction(this);
-    this.navigationController = new NavigationController(this);
-    this.zoomController = new ZoomController(this);
     this.toolbarController = new ToolbarController(this);
     this.spreadComposer = new SpreadComposer(this);
     this.placedPreviewManager = new PlacedPreviewManager(this);

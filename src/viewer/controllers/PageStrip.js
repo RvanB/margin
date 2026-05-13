@@ -1,4 +1,4 @@
-import { PAGE_STRIP_DISPLAY_HEIGHT, SHARED_PREVIEW_SIZE } from "../previewSizing.js";
+import { PAGE_STRIP_DISPLAY_HEIGHT, SHARED_PREVIEW_SIZE } from "../../previewSizing.js";
 
 export class PageStrip {
   constructor(container, { onPageClick, getEffectEntry, getDisplay, getLayout }) {

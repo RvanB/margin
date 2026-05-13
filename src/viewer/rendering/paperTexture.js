@@ -1,4 +1,4 @@
-const PAPER_TEXTURE_URL = new URL("../../229-plain-white-paper.webp", import.meta.url).href;
+const PAPER_TEXTURE_URL = new URL("../../../229-plain-white-paper.webp", import.meta.url).href;
 
 let neutralCanvas = null;
 let loadedTextureCanvas = null;

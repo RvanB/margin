@@ -1,7 +1,7 @@
 import { loadImageFile } from "../loading/imageLoader.js";
-import { getPdfPageRasterSourceInfo, renderPdfPage } from "../loading/pdfLoader.js";
-import { computeMargins, getPageGeometry } from "../rendering/layout.js";
-import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
+import { getPdfPageRasterSourceInfo, renderPdfPage } from "../viewer/loading/pdfLoader.js";
+import { computeMargins, getPageGeometry } from "../viewer/rendering/layout.js";
+import { SpreadRenderer } from "../viewer/rendering/SpreadRenderer.js";
 import { canvasToBlob, getPageSide, parseNumber } from "../util/helpers.js";
 
 export class ExportController {
