@@ -45,7 +45,6 @@ export class PageStrip {
     const spread = uiState.effectiveSpread;
     const leftIndex = spread * 2 - 1;
     const rightIndex = spread * 2;
-    let activeThumb = null;
 
     book.pages.forEach((page, index) => {
       const record = this.thumbs[index];
@@ -60,11 +59,26 @@ export class PageStrip {
       if (record.label.textContent !== labelText) record.label.textContent = labelText;
 
       this.#refreshThumbCanvas(record, page, index);
-
-      if (isActive || (uiState.appMode === "layout" && inSpread && !activeThumb)) activeThumb = record.thumb;
     });
 
-    activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    this.#centerOnSpread(leftIndex, rightIndex);
+  }
+
+  #centerOnSpread(leftIndex, rightIndex) {
+    const leftThumb = leftIndex >= 0 ? this.thumbs[leftIndex]?.thumb : null;
+    const rightThumb = rightIndex >= 0 ? this.thumbs[rightIndex]?.thumb : null;
+    const anchor = leftThumb ?? rightThumb;
+    if (!anchor) return;
+    const spreadLeft = leftThumb ? leftThumb.offsetLeft : rightThumb.offsetLeft;
+    const spreadRight = rightThumb
+      ? rightThumb.offsetLeft + rightThumb.offsetWidth
+      : leftThumb.offsetLeft + leftThumb.offsetWidth;
+    const spreadCenter = (spreadLeft + spreadRight) / 2;
+    const target = spreadCenter - this.container.clientWidth / 2;
+    const maxScroll = Math.max(0, this.container.scrollWidth - this.container.clientWidth);
+    const clamped = Math.max(0, Math.min(maxScroll, target));
+    if (Math.abs(clamped - this.container.scrollLeft) < 0.5) return;
+    this.container.scrollTo({ left: clamped, behavior: "smooth" });
   }
 
   updateThumbnail(pageIndex, page) {
