@@ -73,12 +73,26 @@ export class ZoomController {
     const zoomRatio = nextZoom / this.contentZoom;
 
     this.contentZoom = nextZoom;
+    // Update the canvas's CSS dimensions immediately so the existing pixel
+    // buffer is shown stretched to the new zoom (cheap, just CSS). The
+    // higher-res re-render + texture upload would block the click's paint
+    // if done synchronously — schedule it as an idle task so the browser
+    // paints the CSS-zoomed frame first.
     this.syncCanvasStage();
     requestAnimationFrame(() => {
       canvasArea.scrollLeft = Math.max(0, centerX * zoomRatio - viewportWidth / 2);
       canvasArea.scrollTop = Math.max(0, centerY * zoomRatio - viewportHeight / 2);
     });
-    this.app.schedulePreviewRedraw();
+    // requestIdleCallback runs after the browser has painted the click
+    // frame; the 80 ms timeout ensures the sharp upgrade still lands
+    // quickly on busy main threads. Falls back to setTimeout for Safari
+    // which historically lacked requestIdleCallback.
+    const runPreviewRedraw = () => this.app.schedulePreviewRedraw();
+    if (typeof globalThis.requestIdleCallback === "function") {
+      globalThis.requestIdleCallback(runPreviewRedraw, { timeout: 80 });
+    } else {
+      setTimeout(runPreviewRedraw, 0);
+    }
   }
 
   adjustContentZoom(direction) {
