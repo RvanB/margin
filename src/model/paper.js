@@ -7,19 +7,19 @@ const PAPER_PRESETS = [
   },
   {
     id: "natural",
-    label: "Natural White",
+    label: "Natural",
     paperColor: "#f7f5ef",
     scatterColor: "#edd7a1",
   },
   {
-    id: "cream",
+    id: "ivory",
     label: "Ivory",
     paperColor: "#f4efe2",
     scatterColor: "#e4c470",
   },
 ];
 
-export const DEFAULT_PAPER_PRESET_ID = "cream";
+export const DEFAULT_PAPER_PRESET_ID = "natural";
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, value));
