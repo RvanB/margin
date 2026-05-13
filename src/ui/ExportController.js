@@ -75,8 +75,7 @@ export class ExportController {
     const { canvas: sourceCanvas, temporary } = await this.#getNativeExportSourceCanvas(page);
     if (!sourceCanvas || signal?.aborted) {
       if (temporary && sourceCanvas) {
-        sourceCanvas.width = 0;
-        sourceCanvas.height = 0;
+        sourceCanvas.close?.();
       }
       return null;
     }
@@ -89,8 +88,7 @@ export class ExportController {
       };
     } finally {
       if (temporary) {
-        sourceCanvas.width = 0;
-        sourceCanvas.height = 0;
+        sourceCanvas.close?.();
       }
     }
   }
@@ -204,8 +202,7 @@ export class ExportController {
       );
     } finally {
       if (temporary) {
-        sourceCanvas.width = 0;
-        sourceCanvas.height = 0;
+        sourceCanvas.close?.();
       }
     }
   }

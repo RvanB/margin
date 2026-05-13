@@ -1,7 +1,10 @@
-import { downscaleCanvasToMaxEdge } from "./downscaleCanvas.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
 import { loadImageFile } from "./imageLoader.js";
 import { renderPdfPage, requestPdfDocumentCleanup } from "./pdfLoader.js";
+
+function closeBitmap(bitmap) {
+  if (bitmap && typeof bitmap.close === "function") bitmap.close();
+}
 
 export class LazyPageLoader {
   constructor(book, onPageReady, { pdfRenderScale = 1.5, pdfPreviewSourceScale = 0.25, pdfPreviewMaxEdge = SHARED_PREVIEW_SIZE } = {}) {
@@ -156,18 +159,14 @@ export class LazyPageLoader {
       const page = this.book.pages[pageIndex];
       if (!page || page.previewCanvas || page.source?.type !== "pdf") continue;
       try {
-        const previewSource = await renderPdfPage(
+        const previewBitmap = await renderPdfPage(
           page.source.pdfDoc,
           page.source.pageNum,
-          this.pdfPreviewSourceScale
+          this.pdfPreviewSourceScale,
+          { downscaleTo: this.pdfPreviewMaxEdge }
         );
-        const previewCanvas = await downscaleCanvasToMaxEdge(previewSource, this.pdfPreviewMaxEdge);
-        page.previewCanvas = previewCanvas;
-        if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewCanvas;
-        if (previewSource !== previewCanvas) {
-          previewSource.width = 0;
-          previewSource.height = 0;
-        }
+        page.previewCanvas = previewBitmap;
+        if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewBitmap;
         this.onPageReady?.(pageIndex);
         this.#resolvePageReadyWaiters(pageIndex);
       } catch (error) {
@@ -199,28 +198,30 @@ export class LazyPageLoader {
         minimumHighResScale,
         page.requestedPdfRenderScale || requestedScale
       );
-      const canvas = await renderPdfPage(page.source.pdfDoc, page.source.pageNum, renderScale);
+      const bitmap = await renderPdfPage(page.source.pdfDoc, page.source.pageNum, renderScale);
       if (!this.keepPageIndexes.has(pageIndex)) {
         page.loading = false;
-        canvas.width = 0;
-        canvas.height = 0;
+        closeBitmap(bitmap);
         requestPdfDocumentCleanup(page.source.pdfDoc);
         return;
       }
-      if (page.srcCanvas && page.srcCanvas !== canvas) {
-        page.srcCanvas.width = 0;
-        page.srcCanvas.height = 0;
+      if (page.srcCanvas && page.srcCanvas !== bitmap) {
+        closeBitmap(page.srcCanvas);
       }
-      page.srcCanvas = canvas;
+      page.srcCanvas = bitmap;
       if (!page.previewCanvas) {
-        const previewCanvas = await downscaleCanvasToMaxEdge(canvas, this.pdfPreviewMaxEdge);
-        page.previewCanvas = previewCanvas;
-        if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = previewCanvas;
+        page.previewCanvas = await renderPdfPage(
+          page.source.pdfDoc,
+          page.source.pageNum,
+          this.pdfPreviewSourceScale,
+          { downscaleTo: this.pdfPreviewMaxEdge }
+        );
+        if (!page.thumbnailSourceCanvas) page.thumbnailSourceCanvas = page.previewCanvas;
       } else if (!page.thumbnailSourceCanvas) {
         page.thumbnailSourceCanvas = page.previewCanvas;
       }
       page.loadedPdfRenderScale = renderScale;
-      page.aspectRatio = canvas.width / canvas.height;
+      page.aspectRatio = bitmap.width / bitmap.height;
       page.loading = false;
       this.onPageReady?.(pageIndex);
       this.#resolvePageReadyWaiters(pageIndex);
@@ -240,15 +241,14 @@ export class LazyPageLoader {
 
     page.loading = true;
     try {
-      const canvas = await loadImageFile(page.source.file);
+      const bitmap = await loadImageFile(page.source.file);
       if (!this.keepPageIndexes.has(pageIndex)) {
         page.loading = false;
-        canvas.width = 0;
-        canvas.height = 0;
+        closeBitmap(bitmap);
         return;
       }
-      page.srcCanvas = canvas;
-      page.aspectRatio = canvas.width / canvas.height;
+      page.srcCanvas = bitmap;
+      page.aspectRatio = bitmap.width / bitmap.height;
       page.loading = false;
       this.onPageReady?.(pageIndex);
       this.#resolvePageReadyWaiters(pageIndex);
@@ -280,10 +280,11 @@ export class LazyPageLoader {
   #unloadPage(pageIndex) {
     const page = this.book.pages[pageIndex];
     if (!page || !page.srcCanvas) return;
-    page.srcCanvas.width = 0;
-    page.srcCanvas.height = 0;
+    closeBitmap(page.srcCanvas);
     page.srcCanvas = null;
     page.displayCanvasOverride = null;
+    // interactivePreviewCanvas is either an aliased bitmap (already closed
+    // above) or a freshly allocated HTMLCanvasElement (GC handles it).
     page.interactivePreviewCanvas = null;
     page.interactivePreviewSourceCanvas = null;
     page.interactivePreviewMaxEdge = 0;

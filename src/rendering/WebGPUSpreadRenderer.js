@@ -56,12 +56,6 @@ function setBackendName(name) {
   document.documentElement.dataset.rendererBackend = name;
 }
 
-function isWebKitCanvasUploadQuirkBrowser() {
-  const ua = globalThis.navigator?.userAgent || "";
-  const vendor = globalThis.navigator?.vendor || "";
-  return /AppleWebKit/i.test(ua) && /Apple/i.test(vendor);
-}
-
 function buildSideStates(margins, pages, hasPlacedPages) {
   const build = (sideName, entry) => {
     const page = entry?.page ?? null;
@@ -397,7 +391,6 @@ export class WebGPUSpreadRenderer {
     this.clearColor = [1, 1, 1, 1];
     this.depthTexture = null;
     this.frameDisposables = [];
-    this.useWriteTextureForCanvasUploads = isWebKitCanvasUploadQuirkBrowser();
     setBackendName(this.backendName);
 
     if (!("gpu" in navigator)) {
@@ -1774,20 +1767,6 @@ export class WebGPUSpreadRenderer {
   }
 
   #uploadCanvasToTexture(sourceCanvas, texture) {
-    if (this.useWriteTextureForCanvasUploads) {
-      const ctx = get2dContext(sourceCanvas, { willReadFrequently: true });
-      if (ctx) {
-        const imageData = ctx.getImageData(0, 0, sourceCanvas.width, sourceCanvas.height);
-        this.device.queue.writeTexture(
-          { texture },
-          imageData.data,
-          { bytesPerRow: sourceCanvas.width * 4 },
-          [sourceCanvas.width, sourceCanvas.height]
-        );
-        return;
-      }
-    }
-
     this.device.queue.copyExternalImageToTexture(
       { source: sourceCanvas },
       { texture },
