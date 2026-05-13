@@ -315,6 +315,11 @@ export class App {
     if (this.previewRedrawTimer) clearTimeout(this.previewRedrawTimer);
     this.previewRedrawTimer = setTimeout(() => {
       this.previewRedrawTimer = 0;
+      // High-res loading kicks off many worker round-trips; each result
+      // landing on main thread runs a Task between rAF frames. Hold off
+      // entirely while a turn is animating — the post-animation onDone
+      // calls schedulePreviewRedraw again.
+      if (this.spreadRenderer.isAnimating) return;
       const targetSpread = this.navigationController.getEffectiveSpread();
       const pendingSettledKeepSpreadIndexes = [...this.navigationController.pendingSettledKeepSpreadIndexes];
       const pendingKeepSpreadIndexes = this.navigationController.getLoaderKeepSpreadIndexes(targetSpread);

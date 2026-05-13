@@ -59,6 +59,7 @@ function setBackendName(name) {
 function buildSideStates(margins, pages, hasPlacedPages) {
   const build = (sideName, entry) => {
     const page = entry?.page ?? null;
+    const showThroughPage = entry?.showThroughPage ?? null;
     const geometry = getPageGeometry(
       margins,
       sideName,
@@ -67,12 +68,22 @@ function buildSideStates(margins, pages, hasPlacedPages) {
     );
     const isBlank = hasPlacedPages && !page;
 
+    // Pin source-canvas references at scene-build time. The WebGPU renderer
+    // caches scaled page-surface canvases keyed by source-canvas identity;
+    // if a freshly-rendered high-res srcCanvas swaps in mid-animation, those
+    // caches invalidate and the next animation frame triggers a fresh
+    // main-thread paint of a large surface canvas. Pinning here keeps the
+    // animation drawing from a stable source until the turn settles.
     return {
       side: sideName,
       page,
       pageIndex: entry?.pageIndex ?? -1,
-      showThroughPage: entry?.showThroughPage ?? null,
+      showThroughPage,
       showThroughEffectEntry: entry?.showThroughEffectEntry ?? { pipeline: [], key: "" },
+      surfaceSource: page?.displayCanvas ?? null,
+      translucencySource: page?.previewCanvas ?? page?.thumbnailSourceCanvas ?? null,
+      showThroughSurfaceSource: showThroughPage?.previewCanvas ?? showThroughPage?.thumbnailSourceCanvas ?? null,
+      backFaceSurfaceSource: showThroughPage?.displayCanvas ?? showThroughPage?.thumbnailSourceCanvas ?? null,
       isBlank,
       ...geometry,
       overlayVisible: !isBlank && geometry.overlayVisible,
@@ -1187,7 +1198,8 @@ export class WebGPUSpreadRenderer {
         sideState.contentRect,
         sideState.contentMode,
         sideState.contentAlignX,
-        sideState.contentAlignY
+        sideState.contentAlignY,
+        sideState.surfaceSource
       );
       sideState.drawnRect = measurement?.visibleRect ?? null;
     }
@@ -1473,13 +1485,11 @@ export class WebGPUSpreadRenderer {
   }
 
   #getPageSurfaceCanvas(scene, sideState, side) {
-    return this.#getRenderedPageSurfaceCanvas(scene, sideState, sideState.page?.displayCanvas, this.pageSurfaceCache);
+    return this.#getRenderedPageSurfaceCanvas(scene, sideState, sideState.surfaceSource, this.pageSurfaceCache);
   }
 
   #getTranslucencySurfaceCanvas(scene, sideState, side) {
-    const sourceCanvas = sideState?.page?.previewCanvas
-      ?? sideState?.page?.thumbnailSourceCanvas
-      ?? null;
+    const sourceCanvas = sideState?.translucencySource ?? null;
     if (!sourceCanvas) return this.emptyShowThroughCanvas;
     return this.#getRenderedPageSurfaceCanvas(scene, sideState, sourceCanvas, this.translucencySurfaceCache);
   }
@@ -1586,7 +1596,7 @@ export class WebGPUSpreadRenderer {
       scene,
       sideState,
       side,
-      sideState.showThroughPage?.previewCanvas ?? sideState.showThroughPage?.thumbnailSourceCanvas ?? null,
+      sideState.showThroughSurfaceSource,
       this.showThroughSurfaceCache
     );
   }
@@ -1596,7 +1606,7 @@ export class WebGPUSpreadRenderer {
       scene,
       sideState,
       side,
-      sideState.showThroughPage?.displayCanvas ?? sideState.showThroughPage?.thumbnailSourceCanvas ?? null,
+      sideState.backFaceSurfaceSource,
       this.backFaceSurfaceCache
     );
   }
