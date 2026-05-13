@@ -170,6 +170,10 @@ export class NavigationController {
             this.activeAnimationKeepSpreadIndexes = [];
             this.pendingSettledKeepSpreadIndexes = [...extraKeepSpreadIndexes];
             app.overlayCanvas.style.visibility = "";
+            // Pages whose bitmaps arrived during the animation had their
+            // placed-preview rebuilds deferred — flush them now that the
+            // turn has settled.
+            app.placedPreviewManager.flushDirty();
             app.redraw();
             app.schedulePreviewRedraw();
           };
@@ -181,7 +185,7 @@ export class NavigationController {
         ...app.uiState,
         selectedPageIdxs: cloneSet(app.uiState.selectedPageIdxs),
         effectiveSpread: app.uiState.effectiveSpread,
-      }, app.spreadRenderer);
+      });
     };
 
     if (

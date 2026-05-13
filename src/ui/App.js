@@ -257,7 +257,7 @@ export class App {
       ...this.uiState,
       selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
       effectiveSpread: this.navigationController.getEffectiveSpread(),
-    }, this.spreadRenderer);
+    });
   }
 
   handlePageStripClick(pageIndex, event) {
@@ -412,9 +412,15 @@ export class App {
   onPageReady(pageIndex) {
     const page = this.book.pages[pageIndex];
     if (!page) return;
+    if (this.spreadRenderer.isAnimating) {
+      // Defer placed-preview rebuild and thumbnail repaint until the turn
+      // settles — both are main-thread 2D paints, and a warming book floods
+      // this callback hundreds of times during user navigation.
+      this.placedPreviewManager.markDirty(pageIndex);
+      return;
+    }
     this.placedPreviewManager.refresh(pageIndex);
-    this.pageStrip.updateThumbnail(pageIndex, page, this.spreadRenderer);
-    if (this.spreadRenderer.isAnimating) return;
+    this.pageStrip.updateThumbnail(pageIndex, page);
     const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
     if (pageIndex === left.pageIndex || pageIndex === right.pageIndex) {
       this.redraw();

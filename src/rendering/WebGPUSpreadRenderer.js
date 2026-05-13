@@ -397,6 +397,7 @@ export class WebGPUSpreadRenderer {
       this.fallbackRenderer = new SpreadRenderer(canvas);
       this.backendName = this.fallbackRenderer.backendName;
       setBackendName(this.backendName);
+      console.log(`[renderer] using ${this.backendName} (no navigator.gpu)`);
       return;
     }
 
@@ -458,10 +459,17 @@ export class WebGPUSpreadRenderer {
       return this.fallbackRenderer.snapshot(pages, margins, effects, display, options);
     }
 
+    // On the WebGPU path, the animation samples scene data (texture refs +
+    // geometry) — the returned canvas is only used as a WeakMap key to look
+    // the scene back up. So we skip the expensive 2D helper paint entirely
+    // and return a tiny sentinel canvas sized to the spread.
     const scene = this.#buildScene(pages, margins, effects, display, options);
-    const result = this.helperRenderer.snapshot(pages, margins, effects, display, options);
-    this.sceneByCanvas.set(result.canvas, scene);
-    return result;
+    const keyCanvas = new OffscreenCanvas(
+      Math.max(1, Math.round(2 * margins.pagePxW)),
+      Math.max(1, Math.round(margins.pagePxH)),
+    );
+    this.sceneByCanvas.set(keyCanvas, scene);
+    return { canvas: keyCanvas, sideStates: scene.sideStates, spreadRects: null };
   }
 
   getThumbnail(page, effectEntry, display, options = {}) {
@@ -1114,6 +1122,7 @@ export class WebGPUSpreadRenderer {
       this.backendName = "webgpu";
       this.ready = true;
       setBackendName(this.backendName);
+      console.log(`[renderer] using ${this.backendName}`);
       this.#ensureDepthTexture();
 
       if (this.lastScene && !this.isAnimating) {
@@ -1127,6 +1136,7 @@ export class WebGPUSpreadRenderer {
       this.fallbackRenderer = new SpreadRenderer(this.canvas);
       this.backendName = this.fallbackRenderer.backendName;
       setBackendName(this.backendName);
+      console.log(`[renderer] using ${this.backendName} (webgpu init failed)`);
       if (this.lastRenderArgs) {
         this.fallbackRenderer.render(...this.lastRenderArgs);
       }
