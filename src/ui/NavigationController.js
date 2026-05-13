@@ -42,6 +42,17 @@ export class NavigationController {
     this.pendingSettledKeepSpreadIndexes = [];
   }
 
+  #kickoffHighResForSpread(spreadIndex) {
+    const app = this.app;
+    if (spreadIndex < 0 || spreadIndex >= app.book.numSpreads()) return;
+    const { left, right } = app.book.spreadPageEntries(spreadIndex);
+    for (const pageIndex of [left.pageIndex, right.pageIndex]) {
+      if (pageIndex < 0) continue;
+      if (app.lazyPageLoader.isPageHighResReady(pageIndex, app.contentZoom)) continue;
+      app.lazyPageLoader.ensurePageHighRes(pageIndex, app.contentZoom);
+    }
+  }
+
   cancelQueuedSpreadTurns() {
     this.queuedSpreadTurnToken += 1;
     if (this.queuedSpreadTurnTimer) {
@@ -71,6 +82,11 @@ export class NavigationController {
     for (let spread = pathStart; spread <= pathEnd; spread += 1) {
       queuedKeepSpreadIndexes.push(spread);
     }
+    // Kick off high-res loading for the FINAL destination spread now,
+    // while the queued turns animate through intermediate low-res spreads.
+    // By the time the user arrives, high-res is already in flight or
+    // resolved.
+    this.#kickoffHighResForSpread(clampedTarget);
     const advance = () => {
       if (token !== this.queuedSpreadTurnToken) return;
       const currentSpread = this.getEffectiveSpread();
@@ -119,10 +135,6 @@ export class NavigationController {
     if (!options.fromQueuedJump) this.cancelQueuedSpreadTurns();
     const fromSpread = this.getEffectiveSpread();
     const direction = clampedTarget > fromSpread ? 1 : -1;
-    const targetPages = app.book.spreadPageEntries(clampedTarget);
-    const destinationTurningPageIndex = direction > 0
-      ? targetPages.left.pageIndex
-      : targetPages.right.pageIndex;
     const queuedKeepSpreadIndexes = Array.isArray(options.queuedKeepSpreadIndexes)
       ? options.queuedKeepSpreadIndexes
       : [];
@@ -188,11 +200,12 @@ export class NavigationController {
       });
     };
 
-    if (
-      destinationTurningPageIndex >= 0
-      && !app.lazyPageLoader.isPageHighResReady(destinationTurningPageIndex, app.contentZoom)
-    ) {
-      app.lazyPageLoader.ensurePageHighRes(destinationTurningPageIndex, app.contentZoom);
+    // High-res preloading: for single-step nav, kick off the destination
+    // spread (both pages) now so it's ready on arrival. For queued jumps,
+    // the queue starter already kicked off the final destination — skip
+    // intermediates so they stay low-res.
+    if (!options.fromQueuedJump) {
+      this.#kickoffHighResForSpread(clampedTarget);
     }
 
     startTurn();
