@@ -91,6 +91,8 @@ export class SpreadRenderer {
     pageCanvas.width = pageWidth;
     pageCanvas.height = pageHeight;
     const pageCtx = get2dContext(pageCanvas, { willReadFrequently: true });
+    pageCtx.imageSmoothingEnabled = true;
+    pageCtx.imageSmoothingQuality = "high";
     if (options.includePageColor !== false) {
       pageCtx.fillStyle = display.paperColor;
       pageCtx.fillRect(0, 0, pageWidth, pageHeight);
@@ -162,9 +164,21 @@ export class SpreadRenderer {
     return thumbCanvas;
   }
 
-  animateTo(from, to, direction, onDone) {
+  refreshPageSource(_page) {
+    // 2D fallback animates from pixel-pinned snapshot canvases; mid-animation
+    // source swaps would require repainting those snapshots, which is costly
+    // and would jank the animation. No-op on this path.
+  }
+
+  animateTo(from, to, direction, onDone, options = {}) {
     if (!this.animations.length) this.baseCanvas = from;
-    this.animations.push({ fromCanvas: from, toCanvas: to, direction, start: performance.now() });
+    this.animations.push({
+      fromCanvas: from,
+      toCanvas: to,
+      direction,
+      start: performance.now(),
+      durationMs: options.durationMs ?? TURN_DURATION_MS,
+    });
     if (onDone) this.doneCallbacks.push(onDone);
 
     if (!this.animationFrame) {
@@ -463,7 +477,7 @@ export class SpreadRenderer {
     const landAnimations = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / TURN_DURATION_MS);
+      const progress = Math.min(1, (now - animation.start) / (animation.durationMs || TURN_DURATION_MS));
       const easedProgress = easeTurnProgress(progress);
       const phaseProgress = easedProgress < 0.5 ? easedProgress / 0.5 : (easedProgress - 0.5) / 0.5;
 

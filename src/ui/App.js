@@ -67,7 +67,6 @@ export class App {
       preserveRatio: false,
       ratioSameAsPage: true,
     };
-    this.previewRedrawTimer = 0;
     this.busyIndicator = new BusyIndicator();
     this.lastMargins = computeMargins(this.book.layout, 1);
     this.spreadRenderer = new rendererClass(spreadCanvas);
@@ -218,10 +217,7 @@ export class App {
       this.book.pages.length &&
       (this.uiState.appMode === "content" || this.uiState.showLayoutContent)
     ) {
-      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, {
-        allowHighRes: false,
-        extraKeepSpreadIndexes: this.navigationController.getLoaderKeepSpreadIndexes(this.uiState.currentSpread),
-      });
+      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
     }
 
     const spreadPages = this.spreadComposer.getRenderableSpreadPages(this.uiState.currentSpread);
@@ -312,33 +308,34 @@ export class App {
   }
 
   schedulePreviewRedraw() {
-    if (this.previewRedrawTimer) clearTimeout(this.previewRedrawTimer);
-    this.previewRedrawTimer = setTimeout(() => {
-      this.previewRedrawTimer = 0;
-      // High-res loading kicks off many worker round-trips; each result
-      // landing on main thread runs a Task between rAF frames. Hold off
-      // entirely while a turn is animating — the post-animation onDone
-      // calls schedulePreviewRedraw again.
-      if (this.spreadRenderer.isAnimating) return;
-      const targetSpread = this.navigationController.getEffectiveSpread();
-      const pendingSettledKeepSpreadIndexes = [...this.navigationController.pendingSettledKeepSpreadIndexes];
-      const pendingKeepSpreadIndexes = this.navigationController.getLoaderKeepSpreadIndexes(targetSpread);
-      if (this.book.pages.length) {
-        this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, {
-          allowHighRes: true,
-          extraKeepSpreadIndexes: pendingKeepSpreadIndexes,
-        });
-        const canTrimSettledKeep = pendingSettledKeepSpreadIndexes.length
-          && !this.spreadRenderer.isAnimating
-          && targetSpread === this.uiState.currentSpread
-          && this.zoomController.isSpreadHighResReady(targetSpread, this.contentZoom);
-        if (canTrimSettledKeep) {
-          this.navigationController.clearSettledKeepSpreadIndexes();
-          this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
-        }
+    // Hold off entirely while a turn is animating — the post-animation
+    // onDone callback calls this again once it's safe to load high-res and
+    // trigger redraws.
+    if (this.spreadRenderer.isAnimating) return;
+    const targetSpread = this.navigationController.getEffectiveSpread();
+    if (this.book.pages.length) {
+      this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
+      this.#prefetchAdjacentHighRes(targetSpread);
+    }
+    if (this.zoomController.applySafeRenderZoom()) this.redraw();
+  }
+
+  #prefetchAdjacentHighRes(targetSpread) {
+    // While settled on a spread, pre-render high-res for ±1 spreads at low
+    // priority so next/prev navigation feels instant. If the user navigates
+    // before the prefetch finishes, the queued render either jumps ahead
+    // (via priority on the new kickoff) or, if already in flight, is what
+    // the navigation is waiting on anyway — same as if we hadn't prefetched.
+    const numSpreads = this.book.numSpreads();
+    for (const adj of [targetSpread - 1, targetSpread + 1]) {
+      if (adj < 0 || adj >= numSpreads) continue;
+      const { left, right } = this.book.spreadPageEntries(adj);
+      for (const pageIndex of [left.pageIndex, right.pageIndex]) {
+        if (pageIndex < 0) continue;
+        if (this.lazyPageLoader.isPageHighResReady(pageIndex, this.contentZoom)) continue;
+        this.lazyPageLoader.ensurePageHighRes(pageIndex, this.contentZoom, { priority: false });
       }
-      if (this.zoomController.applySafeRenderZoom()) this.redraw();
-    }, 100);
+    }
   }
 
   async appendFiles(files) {
@@ -418,19 +415,27 @@ export class App {
     const page = this.book.pages[pageIndex];
     if (!page) return;
     if (this.spreadRenderer.isAnimating) {
+      // Re-point active scenes' pinned source canvases at the new bitmap so
+      // the in-flight animation picks it up on its next frame. The next
+      // `#drawPageSurface` for an affected side will rebuild its surface
+      // canvas + texture once (a one-frame cost), then steady-state resumes.
+      this.spreadRenderer.refreshPageSource?.(page);
       // Defer placed-preview rebuild and thumbnail repaint until the turn
       // settles — both are main-thread 2D paints, and a warming book floods
       // this callback hundreds of times during user navigation.
       this.placedPreviewManager.markDirty(pageIndex);
       return;
     }
+    // Swap the visible spread to the new bitmap first so the user sees the
+    // upgrade immediately. The placed-preview rebuild + strip thumbnail
+    // repaint follow — they're main-thread 2D paints and would otherwise
+    // delay the perceived swap by ~5–30 ms.
+    const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
+    const isOnCurrentSpread = pageIndex === left.pageIndex || pageIndex === right.pageIndex;
+    if (isOnCurrentSpread) this.redraw();
     this.placedPreviewManager.refresh(pageIndex);
     this.pageStrip.updateThumbnail(pageIndex, page);
-    const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
-    if (pageIndex === left.pageIndex || pageIndex === right.pageIndex) {
-      this.redraw();
-      this.schedulePreviewRedraw();
-    }
+    if (isOnCurrentSpread) this.schedulePreviewRedraw();
   }
 
   switchMode(mode) {

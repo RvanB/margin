@@ -391,6 +391,9 @@ export class WebGPUSpreadRenderer {
     this.emptyShowThroughCanvas = document.createElement("canvas");
     this.emptyShowThroughCanvas.width = 1;
     this.emptyShowThroughCanvas.height = 1;
+    // WebGPU's copyExternalImageToTexture rejects canvases without a
+    // rendering context — make sure this empty fallback has one.
+    this.emptyShowThroughCanvas.getContext("2d");
     this.paperTextureCanvas = getPaperTextureCanvasSync();
     this.fallbackRenderer = null;
     this.animationFrame = 0;
@@ -479,6 +482,10 @@ export class WebGPUSpreadRenderer {
       Math.max(1, Math.round(2 * margins.pagePxW)),
       Math.max(1, Math.round(margins.pagePxH)),
     );
+    // Ensure a rendering context exists so the sentinel is a valid
+    // drawImage source and copyExternalImageToTexture input if anything
+    // accidentally treats it as a real surface.
+    keyCanvas.getContext("2d");
     this.sceneByCanvas.set(keyCanvas, scene);
     return { canvas: keyCanvas, sideStates: scene.sideStates, spreadRects: null };
   }
@@ -497,9 +504,51 @@ export class WebGPUSpreadRenderer {
     if (scene) this.sceneByCanvas.set(targetCanvas, scene);
   }
 
-  animateTo(from, to, direction, onDone) {
+  /**
+   * Re-points every active scene's pinned source-canvas refs for the given
+   * page (and any side whose show-through neighbour is the given page) to
+   * the page's current canvases. Use this when a fresh high-res bitmap
+   * lands mid-animation so the in-flight turn picks it up on the next
+   * frame instead of waiting for the post-animation redraw.
+   *
+   * The next #drawPageSurface call for an affected side will see a source
+   * mismatch in the page-surface cache and rebuild that side's surface
+   * canvas + texture once. Subsequent frames hit the new cache entry.
+   */
+  refreshPageSource(page) {
+    if (this.fallbackRenderer || !page) return;
+    const newSurfaceSource = page.displayCanvas ?? null;
+    const newTranslucencySource = page.previewCanvas ?? page.thumbnailSourceCanvas ?? null;
+
+    const scenes = new Set();
+    for (const animation of this.animations) {
+      if (animation.fromScene) scenes.add(animation.fromScene);
+      if (animation.toScene) scenes.add(animation.toScene);
+    }
+    if (this.baseScene) scenes.add(this.baseScene);
+    if (this.lastScene) scenes.add(this.lastScene);
+
+    for (const scene of scenes) {
+      const sideStates = scene?.sideStates;
+      if (!sideStates) continue;
+      for (const sideName of ["left", "right"]) {
+        const sideState = sideStates[sideName];
+        if (!sideState) continue;
+        if (sideState.page === page) {
+          sideState.surfaceSource = newSurfaceSource;
+          sideState.translucencySource = newTranslucencySource;
+        }
+        if (sideState.showThroughPage === page) {
+          sideState.showThroughSurfaceSource = newTranslucencySource;
+          sideState.backFaceSurfaceSource = newSurfaceSource;
+        }
+      }
+    }
+  }
+
+  animateTo(from, to, direction, onDone, options = {}) {
     if (this.fallbackRenderer) {
-      this.fallbackRenderer.animateTo(from, to, direction, onDone);
+      this.fallbackRenderer.animateTo(from, to, direction, onDone, options);
       return;
     }
 
@@ -512,6 +561,7 @@ export class WebGPUSpreadRenderer {
       fromScene,
       toScene,
       start: performance.now(),
+      durationMs: options.durationMs ?? TURN_DURATION_MS,
     });
     if (onDone) this.doneCallbacks.push(onDone);
 
@@ -1234,7 +1284,7 @@ export class WebGPUSpreadRenderer {
     const completed = [];
 
     for (const animation of this.animations) {
-      const progress = Math.min(1, (now - animation.start) / TURN_DURATION_MS);
+      const progress = Math.min(1, (now - animation.start) / (animation.durationMs || TURN_DURATION_MS));
       if (progress >= 1) {
         this.baseScene = animation.toScene;
         completed.push(animation);

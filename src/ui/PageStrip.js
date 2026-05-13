@@ -135,6 +135,8 @@ export class PageStrip {
     canvas.style.width = `${displayWidth}px`;
     canvas.style.height = `${PAGE_STRIP_DISPLAY_HEIGHT}px`;
     const ctx = canvas.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.clearRect(0, 0, thumbWidth, thumbHeight);
     ctx.fillStyle = display.paperColor;
     ctx.fillRect(0, 0, thumbWidth, thumbHeight);

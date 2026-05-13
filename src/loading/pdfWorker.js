@@ -52,6 +52,182 @@ function getPdfjs() {
   return pdfjsPromise;
 }
 
+const DOWNSCALE_WORKGROUP_SIZE = 8;
+let webgpuDownscalerPromise = null;
+
+// Lazy box-filter compute downscaler. Each destination pixel averages every
+// source pixel it covers — produces visibly smoother thumbnails than canvas2D
+// bilinear, especially for large reductions. Runs entirely in the worker.
+function getWebgpuDownscaler() {
+  if (webgpuDownscalerPromise) return webgpuDownscalerPromise;
+  if (!self.navigator?.gpu) {
+    webgpuDownscalerPromise = Promise.resolve(null);
+    return webgpuDownscalerPromise;
+  }
+  webgpuDownscalerPromise = (async () => {
+    try {
+      const adapter = await self.navigator.gpu.requestAdapter();
+      if (!adapter) return null;
+      const device = await adapter.requestDevice();
+      const shaderModule = device.createShaderModule({
+        code: `
+          struct Params {
+            srcWidth: u32,
+            srcHeight: u32,
+            dstWidth: u32,
+            dstHeight: u32,
+          };
+
+          @group(0) @binding(0) var sourceTex: texture_2d<f32>;
+          @group(0) @binding(1) var destTex: texture_storage_2d<rgba8unorm, write>;
+          @group(0) @binding(2) var<uniform> params: Params;
+
+          fn ceilDiv(value: u32, divisor: u32) -> u32 {
+            return (value + divisor - 1u) / divisor;
+          }
+
+          @compute @workgroup_size(${DOWNSCALE_WORKGROUP_SIZE}, ${DOWNSCALE_WORKGROUP_SIZE})
+          fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+            if (gid.x >= params.dstWidth || gid.y >= params.dstHeight) {
+              return;
+            }
+
+            let srcX0 = gid.x * params.srcWidth / params.dstWidth;
+            let srcY0 = gid.y * params.srcHeight / params.dstHeight;
+            let srcX1 = max(srcX0 + 1u, ceilDiv((gid.x + 1u) * params.srcWidth, params.dstWidth));
+            let srcY1 = max(srcY0 + 1u, ceilDiv((gid.y + 1u) * params.srcHeight, params.dstHeight));
+
+            var accum = vec4<f32>(0.0);
+            var count = 0u;
+            for (var sy = srcY0; sy < srcY1; sy = sy + 1u) {
+              for (var sx = srcX0; sx < srcX1; sx = sx + 1u) {
+                accum = accum + textureLoad(sourceTex, vec2<i32>(i32(sx), i32(sy)), 0);
+                count = count + 1u;
+              }
+            }
+
+            textureStore(destTex, vec2<i32>(i32(gid.x), i32(gid.y)), accum / f32(max(count, 1u)));
+          }
+        `,
+      });
+      const pipeline = device.createComputePipeline({
+        layout: "auto",
+        compute: { module: shaderModule, entryPoint: "main" },
+      });
+      device.lost?.then(() => {
+        webgpuDownscalerPromise = null;
+      });
+      return { device, pipeline };
+    } catch (error) {
+      console.error("Worker WebGPU downscaler init failed:", error);
+      return null;
+    }
+  })();
+  return webgpuDownscalerPromise;
+}
+
+async function gpuDownscale(source, targetWidth, targetHeight) {
+  const downscaler = await getWebgpuDownscaler();
+  if (!downscaler) return null;
+  const { device, pipeline } = downscaler;
+  const sourceWidth = Math.max(1, Math.round(source.width));
+  const sourceHeight = Math.max(1, Math.round(source.height));
+  const paddedBytesPerRow = Math.ceil((targetWidth * 4) / 256) * 256;
+
+  const sourceTexture = device.createTexture({
+    size: [sourceWidth, sourceHeight, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  const destTexture = device.createTexture({
+    size: [targetWidth, targetHeight, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+  });
+  const paramsBuffer = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const readbackBuffer = device.createBuffer({
+    size: paddedBytesPerRow * targetHeight,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  });
+
+  try {
+    device.queue.copyExternalImageToTexture(
+      { source },
+      { texture: sourceTexture },
+      [sourceWidth, sourceHeight],
+    );
+    device.queue.writeBuffer(
+      paramsBuffer,
+      0,
+      new Uint32Array([sourceWidth, sourceHeight, targetWidth, targetHeight]),
+    );
+
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sourceTexture.createView() },
+        { binding: 1, resource: destTexture.createView() },
+        { binding: 2, resource: { buffer: paramsBuffer } },
+      ],
+    });
+
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(
+      Math.ceil(targetWidth / DOWNSCALE_WORKGROUP_SIZE),
+      Math.ceil(targetHeight / DOWNSCALE_WORKGROUP_SIZE),
+    );
+    pass.end();
+    encoder.copyTextureToBuffer(
+      { texture: destTexture },
+      { buffer: readbackBuffer, bytesPerRow: paddedBytesPerRow, rowsPerImage: targetHeight },
+      [targetWidth, targetHeight, 1],
+    );
+    device.queue.submit([encoder.finish()]);
+
+    await readbackBuffer.mapAsync(GPUMapMode.READ);
+    const mapped = readbackBuffer.getMappedRange();
+    const srcBytes = new Uint8Array(mapped);
+    const destBytes = new Uint8ClampedArray(targetWidth * targetHeight * 4);
+    for (let row = 0; row < targetHeight; row += 1) {
+      const srcOffset = row * paddedBytesPerRow;
+      const destOffset = row * targetWidth * 4;
+      destBytes.set(srcBytes.subarray(srcOffset, srcOffset + targetWidth * 4), destOffset);
+    }
+    readbackBuffer.unmap();
+
+    const canvas = new OffscreenCanvas(targetWidth, targetHeight);
+    const ctx = canvas.getContext("2d");
+    ctx.putImageData(new ImageData(destBytes, targetWidth, targetHeight), 0, 0);
+    return canvas.transferToImageBitmap();
+  } catch (error) {
+    console.error("Worker WebGPU downscale failed:", error);
+    return null;
+  } finally {
+    sourceTexture.destroy();
+    destTexture.destroy();
+    paramsBuffer.destroy();
+    readbackBuffer.destroy();
+  }
+}
+
+async function downscaleToTarget(source, targetWidth, targetHeight) {
+  const gpuResult = await gpuDownscale(source, targetWidth, targetHeight);
+  if (gpuResult) return gpuResult;
+  // Canvas2D fallback (no WebGPU available in this worker).
+  const downscaled = new OffscreenCanvas(targetWidth, targetHeight);
+  const ctx = downscaled.getContext("2d");
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, targetWidth, targetHeight);
+  return downscaled.transferToImageBitmap();
+}
+
 const docs = new Map();
 const activeOps = new Map();
 const cleanupPending = new Set();
@@ -280,12 +456,7 @@ const handlers = {
       if (downscaleTo > 0) {
         const { width, height } = computeTargetSize(renderWidth, renderHeight, downscaleTo);
         if (width !== renderWidth || height !== renderHeight) {
-          const downscaled = new OffscreenCanvas(width, height);
-          const downCtx = downscaled.getContext("2d");
-          downCtx.imageSmoothingEnabled = true;
-          downCtx.imageSmoothingQuality = "high";
-          downCtx.drawImage(renderCanvas, 0, 0, width, height);
-          return downscaled.transferToImageBitmap();
+          return downscaleToTarget(renderCanvas, width, height);
         }
       }
 
@@ -312,16 +483,12 @@ const handlers = {
     if (downscaleTo > 0) {
       const { width, height } = computeTargetSize(bitmap.width, bitmap.height, downscaleTo);
       if (width !== bitmap.width || height !== bitmap.height) {
-        const canvas = new OffscreenCanvas(width, height);
-        const ctx = canvas.getContext("2d");
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(bitmap, 0, 0, width, height);
         const originalWidth = bitmap.width;
         const originalHeight = bitmap.height;
+        const downscaledBitmap = await downscaleToTarget(bitmap, width, height);
         bitmap.close();
         return {
-          bitmap: canvas.transferToImageBitmap(),
+          bitmap: downscaledBitmap,
           width: originalWidth,
           height: originalHeight,
         };
