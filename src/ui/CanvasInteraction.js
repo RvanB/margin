@@ -165,7 +165,7 @@ export class CanvasInteraction {
     this.pendingCanvasClick = null;
 
     if (app.uiState.appMode === "layout") {
-      const hit = getSpreadHitTarget(app.uiState.spreadRects, x, y);
+      const hit = getSpreadHitTarget(app.getInteractionSpreadRects(), x, y);
       if (hit?.rect?.pageIndex >= 0) {
         this.pendingCanvasClick = { type: "layout-to-content", pageIndex: hit.rect.pageIndex };
       }
@@ -174,8 +174,8 @@ export class CanvasInteraction {
 
     if (app.uiState.appMode !== "content") return;
 
-    const handleHit = getHandleHitTarget(app.uiState.spreadRects, x, y);
-    const spreadHit = handleHit ?? getSpreadHitTarget(app.uiState.spreadRects, x, y);
+    const handleHit = getHandleHitTarget(app.getInteractionSpreadRects(), x, y);
+    const spreadHit = handleHit ?? getSpreadHitTarget(app.getInteractionSpreadRects(), x, y);
     if (!spreadHit?.rect) {
       this.pendingCanvasClick = { type: "content-to-layout" };
       return;
@@ -227,7 +227,7 @@ export class CanvasInteraction {
     const { x, y } = getCanvasCoords(app.spreadCanvas, event);
 
     if (this.dragHandle) {
-      const sideRect = app.uiState.spreadRects?.[this.dragHandle.side];
+      const sideRect = app.getInteractionSpreadRects()?.[this.dragHandle.side];
       if (!sideRect) return;
       const page = app.book.pages[sideRect.pageIndex];
       if (!page) return;
@@ -248,7 +248,7 @@ export class CanvasInteraction {
       return;
     }
 
-    const handleHit = getHandleHitTarget(app.uiState.spreadRects, x, y);
+    const handleHit = getHandleHitTarget(app.getInteractionSpreadRects(), x, y);
     const nextHover = handleHit
       ? { side: handleHit.side, edge: handleHit.handle.edge }
       : null;
@@ -268,7 +268,7 @@ export class CanvasInteraction {
     this.panOrigin = null;
 
     if (this.dragHandle) {
-      const sideRect = app.uiState.spreadRects?.[this.dragHandle.side];
+      const sideRect = app.getInteractionSpreadRects()?.[this.dragHandle.side];
       if (sideRect?.pageIndex >= 0) app.placedPreviewManager.refresh(sideRect.pageIndex);
       this.dragHandle = null;
       if (!app.uiState.hoverHandle) this.setCursor("default");

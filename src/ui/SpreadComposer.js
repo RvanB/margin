@@ -96,12 +96,10 @@ export class SpreadComposer {
       overlayCanvas.width = snapshot.width;
       overlayCanvas.height = snapshot.height;
       const overlayCtx = overlayCanvas.getContext("2d");
-      renderOverlay(overlayCtx, margins, {
-        ...app.uiState,
+      renderOverlay(overlayCtx, margins, app.uiState, {
+        paperColor: app.book.display.paperColor,
         spreadRects: null,
         spreadSideStates: sideStates,
-      }, {
-        paperColor: app.book.display.paperColor,
       });
       const composite = document.createElement("canvas");
       composite.width = snapshot.width;

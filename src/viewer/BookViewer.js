@@ -4,10 +4,10 @@ import { PageStrip } from "./controllers/PageStrip.js";
 import { ZoomController } from "./controllers/ZoomController.js";
 import { ViewerBook } from "./model/ViewerBook.js";
 
-// Phase 2 of the viewer extraction: the viewer owns a ViewerBook populated
-// by a PageSource. App still reaches into BookViewer's properties directly
-// (and the controllers still receive an `app` reference) — Phase 3+ narrows
-// this further.
+// Phase 4 of the viewer extraction: BookViewer is the renderer-facing
+// entrypoint. Callers route render calls through it; it owns the latest
+// spread geometry and broadcasts a "geometrychange" event so app-side
+// overlay layers can react without reading renderer internals.
 export class BookViewer {
   constructor({ spreadCanvas, stripContainer, rendererClass, app, source, pageStripCallbacks }) {
     this.app = app;
@@ -25,9 +25,49 @@ export class BookViewer {
     this.pageStrip = new PageStrip(stripContainer, pageStripCallbacks);
     this.navigationController = new NavigationController(app);
     this.zoomController = new ZoomController(app);
+    this.listeners = new Map();
+    this.latestGeometry = null;
   }
 
   get backendName() {
     return this.spreadRenderer.backendName;
+  }
+
+  render(pages, margins, effects, display, options = {}) {
+    const result = this.spreadRenderer.render(pages, margins, effects, display, options);
+    this.latestGeometry = {
+      spreadRects: result?.spreadRects ?? null,
+      sideStates: result?.sideStates ?? null,
+      margins,
+    };
+    this.#emit("geometrychange", this.latestGeometry);
+    return result;
+  }
+
+  getSpreadGeometry() {
+    return this.latestGeometry;
+  }
+
+  on(event, fn) {
+    let arr = this.listeners.get(event);
+    if (!arr) {
+      arr = [];
+      this.listeners.set(event, arr);
+    }
+    arr.push(fn);
+    return () => this.off(event, fn);
+  }
+
+  off(event, fn) {
+    const arr = this.listeners.get(event);
+    if (!arr) return;
+    const idx = arr.indexOf(fn);
+    if (idx >= 0) arr.splice(idx, 1);
+  }
+
+  #emit(event, ...args) {
+    const arr = this.listeners.get(event);
+    if (!arr) return;
+    for (const fn of arr.slice()) fn(...args);
   }
 }

@@ -82,8 +82,11 @@ function buildSideStates(margins, pages, hasPlacedPages) {
       showThroughEffectEntry: entry?.showThroughEffectEntry ?? { pipeline: [], key: "" },
       surfaceSource: page?.displayCanvas ?? null,
       translucencySource: page?.previewCanvas ?? page?.thumbnailSourceCanvas ?? null,
-      showThroughSurfaceSource: showThroughPage?.previewCanvas ?? showThroughPage?.thumbnailSourceCanvas ?? null,
-      backFaceSurfaceSource: showThroughPage?.displayCanvas ?? showThroughPage?.thumbnailSourceCanvas ?? null,
+      // Show-through composition still happens in the renderer (it needs the
+      // back-side placement of the neighboring page). Pin the raw source
+      // bitmaps so the helperRenderer can apply its own placement math.
+      showThroughSurfaceSource: showThroughPage?.rawPreviewCanvas ?? showThroughPage?.thumbnailSourceCanvas ?? null,
+      backFaceSurfaceSource: showThroughPage?.rawDisplayCanvas ?? showThroughPage?.thumbnailSourceCanvas ?? null,
       isBlank,
       ...geometry,
       overlayVisible: !isBlank && geometry.overlayVisible,
@@ -519,6 +522,10 @@ export class WebGPUSpreadRenderer {
     if (this.fallbackRenderer || !page) return;
     const newSurfaceSource = page.displayCanvas ?? null;
     const newTranslucencySource = page.previewCanvas ?? page.thumbnailSourceCanvas ?? null;
+    // Show-through composition uses the raw (un-composed) bitmaps so the
+    // helperRenderer can apply the opposite-side placement.
+    const newRawDisplay = page.rawDisplayCanvas ?? page.thumbnailSourceCanvas ?? null;
+    const newRawPreview = page.rawPreviewCanvas ?? page.thumbnailSourceCanvas ?? null;
 
     const scenes = new Set();
     for (const animation of this.animations) {
@@ -539,8 +546,8 @@ export class WebGPUSpreadRenderer {
           sideState.translucencySource = newTranslucencySource;
         }
         if (sideState.showThroughPage === page) {
-          sideState.showThroughSurfaceSource = newTranslucencySource;
-          sideState.backFaceSurfaceSource = newSurfaceSource;
+          sideState.showThroughSurfaceSource = newRawPreview;
+          sideState.backFaceSurfaceSource = newRawDisplay;
         }
       }
     }
@@ -1243,13 +1250,18 @@ export class WebGPUSpreadRenderer {
     for (const sideName of ["left", "right"]) {
       const sideState = sideStates[sideName];
       if (!sideState.page) continue;
+      // The renderer no longer composes — but it still publishes
+      // `drawnRect` so the app's crop-handle UI can convert canvas-space
+      // drags back into source-pixel deltas. Measure against the raw
+      // source bitmap (not the composed one) so visibleRect's fitScale +
+      // sw/sh refer to the original content.
       const measurement = measurePageDraw(
         sideState.page,
         sideState.contentRect,
         sideState.contentMode,
         sideState.contentAlignX,
         sideState.contentAlignY,
-        sideState.surfaceSource
+        sideState.page.rawDisplayCanvas ?? sideState.surfaceSource
       );
       sideState.drawnRect = measurement?.visibleRect ?? null;
     }
@@ -1544,101 +1556,13 @@ export class WebGPUSpreadRenderer {
     return this.#getRenderedPageSurfaceCanvas(scene, sideState, sourceCanvas, this.translucencySurfaceCache);
   }
 
-  #getRenderedPageSurfaceCanvas(scene, sideState, sourceCanvas, cacheStore) {
+  // Page composition (content placement, crop, fit, align) lives in the
+  // app's PageComposer now. The source canvas arrives here already at
+  // page-rect proportions, so this is just a passthrough — the WebGPU
+  // shader samples the bitmap directly onto the page geometry.
+  #getRenderedPageSurfaceCanvas(_scene, sideState, sourceCanvas, _cacheStore) {
     if (!sideState?.page || !sourceCanvas) return null;
-
-    const measurement = measurePageDraw(
-      sideState.page,
-      sideState.contentRect,
-      sideState.contentMode,
-      sideState.contentAlignX,
-      sideState.contentAlignY,
-      sourceCanvas
-    );
-    const surfaceScale = getPageSurfaceScale(sideState.pageRect, measurement, scene.previewZoom);
-    const pageWidth = Math.max(1, Math.round(sideState.pageRect.w));
-    const pageHeight = Math.max(1, Math.round(sideState.pageRect.h));
-    const clampedSurfaceScale = Math.min(
-      surfaceScale,
-      MAX_PAGE_SURFACE_EDGE / Math.max(pageWidth, pageHeight)
-    );
-    const surfaceCrop = sideState.page.getCropFor(sourceCanvas);
-    const drawKey = measurement
-      ? [
-        Math.round(sideState.pageRect.w),
-        Math.round(sideState.pageRect.h),
-        surfaceCrop.left,
-        surfaceCrop.top,
-        surfaceCrop.right,
-        surfaceCrop.bottom,
-        Math.round(sideState.contentRect.x - sideState.pageRect.x),
-        Math.round(sideState.contentRect.y - sideState.pageRect.y),
-        Math.round(sideState.contentRect.w),
-        Math.round(sideState.contentRect.h),
-        sideState.contentAlignX,
-        sideState.contentAlignY,
-        sideState.contentMode,
-        Math.round(clampedSurfaceScale * 1000),
-      ].join("|")
-      : null;
-
-    let pageCache = cacheStore.get(sideState.page);
-    if (!pageCache || pageCache.srcCanvas !== sourceCanvas) {
-      pageCache = {
-        srcCanvas: sourceCanvas,
-        variants: new Map(),
-      };
-      cacheStore.set(sideState.page, pageCache);
-    }
-
-    const cached = drawKey ? pageCache.variants.get(drawKey) : null;
-    if (cached) return cached;
-
-    const surface = document.createElement("canvas");
-    surface.width = Math.max(1, Math.min(MAX_PAGE_SURFACE_EDGE, Math.round(pageWidth * clampedSurfaceScale)));
-    surface.height = Math.max(1, Math.min(MAX_PAGE_SURFACE_EDGE, Math.round(pageHeight * clampedSurfaceScale)));
-    const ctx = setHighQualitySampling(get2dContext(surface, { willReadFrequently: true }));
-    ctx.scale(clampedSurfaceScale, clampedSurfaceScale);
-
-    if (measurement) {
-      if (measurement.clipRect) {
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(
-          Math.round(measurement.clipRect.x - sideState.pageRect.x),
-          Math.round(measurement.clipRect.y - sideState.pageRect.y),
-          Math.round(measurement.clipRect.w),
-          Math.round(measurement.clipRect.h)
-        );
-        ctx.clip();
-      }
-
-      ctx.drawImage(
-        sourceCanvas,
-        0,
-        0,
-        sourceCanvas.width,
-        sourceCanvas.height,
-        Math.round(measurement.drawRect.x - sideState.pageRect.x),
-        Math.round(measurement.drawRect.y - sideState.pageRect.y),
-        Math.round(measurement.drawRect.w),
-        Math.round(measurement.drawRect.h)
-      );
-
-      if (measurement.clipRect) ctx.restore();
-    }
-
-    if (drawKey) {
-      this.#markCanvasDirty(surface);
-      pageCache.variants.set(drawKey, surface);
-      if (pageCache.variants.size > 8) {
-        const oldestKey = pageCache.variants.keys().next().value;
-        pageCache.variants.delete(oldestKey);
-      }
-    }
-
-    this.#markCanvasDirty(surface);
-    return surface;
+    return sourceCanvas;
   }
 
   #getShowThroughSurfaceCanvas(scene, sideState, side) {

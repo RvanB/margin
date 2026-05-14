@@ -11,11 +11,34 @@ export class ViewerPage {
   }
 
   get srcCanvas() { return this.metadata?.srcCanvas ?? null; }
-  get previewCanvas() { return this.metadata?.previewCanvas ?? null; }
+  // Prefer the composed (already-margin-applied) bitmaps when the app has
+  // produced them. Fall back to raw source bitmaps before the first
+  // composition completes so the renderer never reads a stale-null.
+  get previewCanvas() {
+    const m = this.metadata;
+    return m?.composedPreviewCanvas ?? m?.previewCanvas ?? null;
+  }
+  get displayCanvas() {
+    const m = this.metadata;
+    return m?.displayCanvasOverride
+      ?? m?.composedDisplayCanvas
+      ?? m?.composedPreviewCanvas
+      ?? m?.srcCanvas
+      ?? m?.previewCanvas
+      ?? null;
+  }
+  // Raw (unmposed) bitmaps. The renderer's show-through code still does its
+  // own placement composition for the back-face appearance and needs these
+  // unmodified source bitmaps to do that. Phase 4 will lift the show-through
+  // composition into the app so these go away.
+  get rawPreviewCanvas() { return this.metadata?.previewCanvas ?? null; }
+  get rawDisplayCanvas() {
+    const m = this.metadata;
+    return m?.displayCanvasOverride ?? m?.srcCanvas ?? m?.previewCanvas ?? null;
+  }
   get thumbnailSourceCanvas() { return this.metadata?.thumbnailSourceCanvas ?? null; }
   get placedPreviewCanvas() { return this.metadata?.placedPreviewCanvas ?? null; }
   get displayCanvasOverride() { return this.metadata?.displayCanvasOverride ?? null; }
-  get displayCanvas() { return this.metadata?.displayCanvas ?? null; }
   get thumbnailCanvas() { return this.metadata?.thumbnailCanvas ?? null; }
   get contentAlignX() { return this.metadata?.contentAlignX ?? null; }
   get contentAlignY() { return this.metadata?.contentAlignY ?? null; }

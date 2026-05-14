@@ -276,7 +276,11 @@ export class SpreadRenderer {
   }
 
   #drawPageContent(ctx, page, x, y, w, h, effectEntry, blendMode, options) {
-    const sourceCanvas = options.sourceCanvas ?? page?.displayCanvas;
+    // The 2D fallback path still does its own content placement, so it needs
+    // the raw (un-composed) source bitmap. ViewerPage.displayCanvas would
+    // return the app-composed page bitmap with margins already baked in,
+    // which would double-compose here.
+    const sourceCanvas = options.sourceCanvas ?? page?.rawDisplayCanvas ?? page?.displayCanvas;
     if (!sourceCanvas) return null;
 
     const crop = options.crop ?? page.getCropFor(sourceCanvas);

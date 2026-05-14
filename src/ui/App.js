@@ -1,4 +1,5 @@
 import { Book } from "../model/Book.js";
+import { composePageCanvas } from "../composition/PageComposer.js";
 import { BookViewer } from "../viewer/BookViewer.js";
 import { ImagePageSource } from "../viewer/sources/ImagePageSource.js";
 import { computeMargins } from "../viewer/rendering/layout.js";
@@ -54,8 +55,6 @@ export class App {
       editingPageIdx: 0,
       selectedPageIdxs: new Set([0]),
       hoverHandle: null,
-      spreadRects: null,
-      spreadSideStates: null,
       showMarginArrows: false,
       showLayoutContent: true,
       showPageBorder: true,
@@ -128,8 +127,59 @@ export class App {
     return this.bookViewer.book;
   }
 
+  // Spread rects from the viewer's latest render, gated by whether
+  // interactions should be live (i.e., content mode or layout mode with
+  // content shown). Used by CanvasInteraction for hit-testing.
+  getInteractionSpreadRects() {
+    if (!this.spreadComposer.shouldExposeSpreadRects()) return null;
+    return this.bookViewer.getSpreadGeometry()?.spreadRects ?? null;
+  }
+
   getEffectEntry(page) {
     return this.spreadComposer.getEffectEntry(page);
+  }
+
+  // Compose a page's bitmaps into "ready to display" canvases. Called when
+  // a fresh source bitmap arrives via LazyPageLoader, and whenever
+  // layout/page settings change. The viewer reads these via ViewerPage's
+  // displayCanvas / previewCanvas getters.
+  composePage(pageIndex) {
+    const page = this.book.pages[pageIndex];
+    if (!page) return;
+    const sideName = pageIndex % 2 === 1 ? "left" : "right";
+    const layout = this.book.layout;
+    if (page.srcCanvas) {
+      page.composedDisplayCanvas = composePageCanvas({
+        page,
+        sourceBitmap: page.srcCanvas,
+        layout,
+        sideName,
+      });
+    } else {
+      page.composedDisplayCanvas = null;
+    }
+    if (page.previewCanvas) {
+      page.composedPreviewCanvas = composePageCanvas({
+        page,
+        sourceBitmap: page.previewCanvas,
+        layout,
+        sideName,
+      });
+    } else {
+      page.composedPreviewCanvas = null;
+    }
+  }
+
+  composeAllLoadedPages() {
+    this.book.pages.forEach((_, pageIndex) => this.composePage(pageIndex));
+  }
+
+  #composeVisibleSpread() {
+    const spreadIndex = this.uiState.currentSpread;
+    if (spreadIndex < 0) return;
+    const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
+    if (left?.pageIndex >= 0) this.composePage(left.pageIndex);
+    if (right?.pageIndex >= 0) this.composePage(right.pageIndex);
   }
 
   init() {
@@ -246,9 +296,15 @@ export class App {
       this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
     }
 
+    // Recompose visible pages so their displayCanvas reflects the current
+    // layout / display / page settings. Cheap (a 2D drawImage) compared to
+    // running the full renderer. Animations don't fire redraw per frame —
+    // they pin scenes at start, so this only runs when settled.
+    this.#composeVisibleSpread();
+
     const spreadPages = this.spreadComposer.getRenderableSpreadPages(this.uiState.currentSpread);
 
-    const renderResult = this.spreadRenderer.render(
+    const renderResult = this.bookViewer.render(
       spreadPages,
       margins,
       {
@@ -265,13 +321,19 @@ export class App {
 
     this.overlayCanvas.width = this.spreadCanvas.width;
     this.overlayCanvas.height = this.spreadCanvas.height;
-    this.uiState.spreadSideStates = renderResult.sideStates;
-    this.uiState.spreadRects = this.spreadComposer.shouldExposeSpreadRects() ? renderResult.spreadRects : null;
     this.zoomController.syncCanvasStage();
 
     if (!this.spreadRenderer.isAnimating) {
+      // Geometry consumed by the overlay (margin arrows, crop handles)
+      // comes from the viewer's last render. App-side editing UI only
+      // wants the spread rects when content mode is active and there's
+      // a placed page; SpreadComposer.shouldExposeSpreadRects gates that.
       renderOverlay(this.overlayCtx, margins, this.uiState, {
         paperColor: this.book.display.paperColor,
+        spreadRects: this.spreadComposer.shouldExposeSpreadRects()
+          ? renderResult?.spreadRects ?? null
+          : null,
+        spreadSideStates: renderResult?.sideStates ?? null,
       });
     }
 
@@ -442,13 +504,18 @@ export class App {
     const page = this.book.pages[pageIndex];
     const viewerPage = this.viewerBook.pages[pageIndex] ?? null;
     if (!page) return;
+    // Always compose on bitmap arrival — this is how pages that aren't the
+    // current spread (e.g., intermediate spreads in a queued multi-spread
+    // turn, or any neighbor whose preview just loaded) end up with margins
+    // applied. Composing the preview alone is cheap; the visible spread
+    // gets composed again in #composeVisibleSpread but the cost is small.
+    this.composePage(pageIndex);
     if (this.spreadRenderer.isAnimating) {
-      // Re-point active scenes' pinned source canvases at the new bitmap so
-      // the in-flight animation picks it up on its next frame. Scenes hold
-      // ViewerPage refs, so we pass the ViewerPage (not the app's Page).
-      // The next `#drawPageSurface` for an affected side will rebuild its
-      // surface canvas + texture once (a one-frame cost), then steady-state
-      // resumes.
+      // Re-point active scenes' pinned source canvases at the new bitmap.
+      // Scenes hold ViewerPage refs, so we pass the ViewerPage (not the
+      // app's Page). The next `#drawPageSurface` for an affected side will
+      // rebuild its texture upload once (a one-frame cost), then steady-
+      // state resumes.
       if (viewerPage) this.spreadRenderer.refreshPageSource?.(viewerPage);
       // Defer placed-preview rebuild and thumbnail repaint until the turn
       // settles — both are main-thread 2D paints, and a warming book floods
