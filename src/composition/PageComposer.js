@@ -1,4 +1,4 @@
-import { computeMargins, getPageGeometry } from "../viewer/rendering/layout.js";
+import { computeMargins, getPageGeometry } from "riffle";
 
 // Maximum offscreen-canvas edge for a single composed page. Mirrors the cap
 // the viewer used to enforce. WebGPU implementations sometimes refuse

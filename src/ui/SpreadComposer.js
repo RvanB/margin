@@ -1,5 +1,5 @@
 import { buildGpuEffectConfig, buildPipeline, effectKey } from "../effects/pipeline.js";
-import { computeMargins } from "../viewer/rendering/layout.js";
+import { computeMargins } from "riffle";
 import { renderOverlay } from "./OverlayRenderer.js";
 
 export class SpreadComposer {

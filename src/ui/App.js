@@ -1,10 +1,13 @@
 import { Book } from "../model/Book.js";
 import { composePageCanvas } from "../composition/PageComposer.js";
-import { BookViewer } from "../viewer/BookViewer.js";
-import { ImagePageSource } from "../viewer/sources/ImagePageSource.js";
-import { computeMargins } from "../viewer/rendering/layout.js";
+import {
+  BookViewer,
+  ImagePageSource,
+  PageStrip,
+  computeMargins,
+  SpreadRenderer,
+} from "riffle";
 import { renderOverlay } from "./OverlayRenderer.js";
-import { SpreadRenderer } from "../viewer/rendering/SpreadRenderer.js";
 import { BusyIndicator } from "./BusyIndicator.js";
 import { CanvasInteraction } from "./CanvasInteraction.js";
 import { ExportController } from "./ExportController.js";
@@ -77,23 +80,53 @@ export class App {
         if (!page) return null;
         return { aspectRatio: page.aspectRatio, passthrough: page };
       },
+      // The viewer's LazyPageLoader writes srcCanvas/previewCanvas onto our
+      // app.book.Page instances; expose the book so it can find them.
+      internalBook: this.book,
     });
     this.bookViewer = new BookViewer({
       spreadCanvas,
-      stripContainer,
+      viewport: document.getElementById("canvas-area"),
       rendererClass,
-      app: this,
       source: this.pageSource,
-      pageStripCallbacks: {
-        onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
-        getEffectEntry: page => this.getEffectEntry(page),
-        getDisplay: () => this.book.display,
-        getLayout: () => this.book.layout,
-      },
+      layout: this.book.layout,
+      display: this.book.display,
+    });
+    this.pageStrip = new PageStrip(stripContainer, {
+      onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
+      getEffectEntry: page => this.getEffectEntry(page),
+      getDisplay: () => this.book.display,
+      getLayout: () => this.book.layout,
+    });
+    // Wire viewer events to keep the margin-owned page strip in sync.
+    this.bookViewer.on("sourcechange", () => this.pageStrip.update(this.viewerBook, this.#stripState()));
+    this.bookViewer.on("spreadchange", ({ spreadIndex }) => {
+      this.uiState.currentSpread = spreadIndex;
+      this.uiState.effectiveSpread = spreadIndex;
+      // Move the editing selection onto the new spread's pages so crop
+      // handles, the per-page toolbar, etc. apply to the newly-visible
+      // page. Prefer the right page (or the only page on the cover).
+      this.#selectSpreadForEditing(spreadIndex);
+      this.pageStrip.update(this.viewerBook, this.#stripState());
+    });
+    // Scroll-track the strip with each in-flight navigation step (including
+    // every spread of a queued multi-spread turn).
+    this.bookViewer.on("effectivespreadchange", ({ spreadIndex }) => {
+      this.uiState.effectiveSpread = spreadIndex;
+      this.pageStrip.update(this.viewerBook, this.#stripState());
+    });
+    this.bookViewer.on("pageready", ({ pageIndex }) => {
+      // Compose first so the viewer's subsequent redraw reads through
+      // composedDisplayCanvas / composedPreviewCanvas instead of the raw
+      // PDF rasterization. (Riffle emits "pageready" before its internal
+      // redraw exactly so hosts can do this.)
+      this.composePage(pageIndex);
+      const viewerPage = this.viewerBook.pages[pageIndex];
+      if (viewerPage) this.pageStrip.updateThumbnail(pageIndex, viewerPage);
+      this.placedPreviewManager.refresh(pageIndex);
     });
     this.spreadRenderer = this.bookViewer.spreadRenderer;
     this.lazyPageLoader = this.bookViewer.lazyPageLoader;
-    this.pageStrip = this.bookViewer.pageStrip;
     this.navigationController = this.bookViewer.navigationController;
     this.zoomController = this.bookViewer.zoomController;
     globalThis.__rendererBackend = this.spreadRenderer.backendName;
@@ -133,6 +166,31 @@ export class App {
   getInteractionSpreadRects() {
     if (!this.spreadComposer.shouldExposeSpreadRects()) return null;
     return this.bookViewer.getSpreadGeometry()?.spreadRects ?? null;
+  }
+
+  #stripState() {
+    return {
+      ...this.uiState,
+      selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
+      effectiveSpread: this.navigationController.getEffectiveSpread(),
+    };
+  }
+
+  #selectSpreadForEditing(spreadIndex) {
+    if (this.uiState.appMode !== "content") return;
+    const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
+    const candidates = [left.pageIndex, right.pageIndex].filter(i => i >= 0 && i < this.viewerBook.pages.length);
+    if (!candidates.length) return;
+    // Keep the previously-edited page if it's on this spread; otherwise
+    // default to the left page (or the right one if there's no left).
+    const previous = this.uiState.editingPageIdx;
+    const next = candidates.includes(previous) ? previous : candidates[0];
+    if (next === previous && this.uiState.selectedPageIdxs.size === 1 && this.uiState.selectedPageIdxs.has(next)) return;
+    this.placedPreviewManager.endInteractive({ redraw: false });
+    this.placedPreviewManager.flushDirty();
+    this.uiState.editingPageIdx = next;
+    this.uiState.selectedPageIdxs = new Set([next]);
+    this.toolbarController.syncPageUI();
   }
 
   getEffectEntry(page) {
@@ -175,7 +233,9 @@ export class App {
   }
 
   #composeVisibleSpread() {
-    const spreadIndex = this.uiState.currentSpread;
+    // bookViewer owns the navigation state; margin's uiState.currentSpread
+    // is stale unless we explicitly sync it. Read from the viewer.
+    const spreadIndex = this.bookViewer.currentSpread;
     if (spreadIndex < 0) return;
     const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
     if (left?.pageIndex >= 0) this.composePage(left.pageIndex);
@@ -289,59 +349,35 @@ export class App {
     this.toolbarController.updateComputedRows(margins);
     this.canvasInteraction.refreshDragCursor();
 
-    if (
-      this.book.pages.length &&
-      (this.uiState.appMode === "content" || this.uiState.showLayoutContent)
-    ) {
-      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
-    }
+    // Push margin-owned settings into the viewer in case they changed.
+    this.bookViewer.layout = this.book.layout;
+    this.bookViewer.display = this.book.display;
+    this.bookViewer.showPageBorder = this.uiState.showPageBorder;
 
-    // Recompose visible pages so their displayCanvas reflects the current
-    // layout / display / page settings. Cheap (a 2D drawImage) compared to
-    // running the full renderer. Animations don't fire redraw per frame —
-    // they pin scenes at start, so this only runs when settled.
+    // Compose visible pages so their composedDisplayCanvas is fresh before
+    // the viewer reads through ViewerPage.displayCanvas during its render.
     this.#composeVisibleSpread();
 
-    const spreadPages = this.spreadComposer.getRenderableSpreadPages(this.uiState.currentSpread);
+    // Viewer renders. It uses its internal LazyPageLoader against our
+    // app.book (because ImagePageSource.getInternalBook returns it) and
+    // reads display/layout off bookViewer (which we just synced).
+    this.bookViewer.redraw();
 
-    const renderResult = this.bookViewer.render(
-      spreadPages,
-      margins,
-      {
-        left: spreadPages?.left?.page ? this.getEffectEntry(spreadPages.left.page) : { pipeline: [], key: "" },
-        right: spreadPages?.right?.page ? this.getEffectEntry(spreadPages.right.page) : { pipeline: [], key: "" },
-      },
-      this.book.display,
-      {
-        showPlaceholder: this.spreadComposer.shouldShowPlaceholder(),
-        previewZoom: this.renderZoom,
-        showPageBorder: this.uiState.showPageBorder,
-      }
-    );
-
+    const geometry = this.bookViewer.getSpreadGeometry();
     this.overlayCanvas.width = this.spreadCanvas.width;
     this.overlayCanvas.height = this.spreadCanvas.height;
-    this.zoomController.syncCanvasStage();
 
     if (!this.spreadRenderer.isAnimating) {
-      // Geometry consumed by the overlay (margin arrows, crop handles)
-      // comes from the viewer's last render. App-side editing UI only
-      // wants the spread rects when content mode is active and there's
-      // a placed page; SpreadComposer.shouldExposeSpreadRects gates that.
       renderOverlay(this.overlayCtx, margins, this.uiState, {
         paperColor: this.book.display.paperColor,
         spreadRects: this.spreadComposer.shouldExposeSpreadRects()
-          ? renderResult?.spreadRects ?? null
+          ? geometry?.spreadRects ?? null
           : null,
-        spreadSideStates: renderResult?.sideStates ?? null,
+        spreadSideStates: geometry?.sideStates ?? null,
       });
     }
 
-    this.pageStrip.update(this.viewerBook, {
-      ...this.uiState,
-      selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
-      effectiveSpread: this.navigationController.getEffectiveSpread(),
-    });
+    this.pageStrip.update(this.viewerBook, this.#stripState());
   }
 
   handlePageStripClick(pageIndex, event) {
@@ -396,16 +432,10 @@ export class App {
   }
 
   schedulePreviewRedraw() {
-    // Hold off entirely while a turn is animating — the post-animation
-    // onDone callback calls this again once it's safe to load high-res and
-    // trigger redraws.
-    if (this.spreadRenderer.isAnimating) return;
-    const targetSpread = this.navigationController.getEffectiveSpread();
-    if (this.book.pages.length) {
-      this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
-      this.#prefetchAdjacentHighRes(targetSpread);
-    }
-    if (this.zoomController.applySafeRenderZoom()) this.redraw();
+    // Delegate to the viewer — it does the same work (LRU prefetch +
+    // safe-render-zoom + redraw) and is also called internally on
+    // navigation/zoom changes.
+    this.bookViewer.schedulePreviewRedraw();
   }
 
   #prefetchAdjacentHighRes(targetSpread) {

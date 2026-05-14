@@ -1,4 +1,4 @@
-import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../viewer/rendering/primitives.js";
+import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "riffle";
 
 function getCanvasCoords(spreadCanvas, event) {
   const rect = spreadCanvas.getBoundingClientRect();

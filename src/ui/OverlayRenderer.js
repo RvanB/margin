@@ -1,8 +1,4 @@
-import {
-  drawCropHandles,
-  drawMarginOverlay,
-  drawVdG,
-} from "../viewer/rendering/primitives.js";
+import { drawCropHandles, drawMarginOverlay, drawVdG } from "riffle";
 
 export function renderOverlay(ctx, margins, uiState, {
   paperColor = null,

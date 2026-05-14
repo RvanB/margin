@@ -1,5 +1,5 @@
 import { App } from "./ui/App.js";
-import { WebGPUSpreadRenderer } from "./viewer/rendering/WebGPUSpreadRenderer.js";
+import { WebGPUSpreadRenderer } from "riffle";
 
 const app = new App(
   document.getElementById("spread-canvas"),

@@ -1,6 +1,5 @@
-import { downscaleCanvasToMaxEdgeSync } from "../viewer/loading/downscaleCanvas.js";
+import { downscaleCanvasToMaxEdgeSync, SpreadRenderer } from "riffle";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";
-import { SpreadRenderer } from "../viewer/rendering/SpreadRenderer.js";
 import { getSelectedPages } from "../util/helpers.js";
 
 const INTERACTIVE_PREVIEW_SCALE = 0.25;
