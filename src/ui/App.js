@@ -1,5 +1,6 @@
 import { Book } from "../model/Book.js";
 import { BookViewer } from "../viewer/BookViewer.js";
+import { ImagePageSource } from "../viewer/sources/ImagePageSource.js";
 import { computeMargins } from "../viewer/rendering/layout.js";
 import { renderOverlay } from "./OverlayRenderer.js";
 import { SpreadRenderer } from "../viewer/rendering/SpreadRenderer.js";
@@ -66,11 +67,24 @@ export class App {
     };
     this.busyIndicator = new BusyIndicator();
     this.lastMargins = computeMargins(this.book.layout, 1);
+    // The page source bridges the margin app's Book/Page model to the viewer.
+    // Until Phase 3 decouples composition, the metadata's `passthrough` field
+    // is the app's Page instance — the renderer reads its placement fields
+    // (crop, fitAxis, etc.) and the lazy loader writes bitmaps onto it.
+    this.pageSource = new ImagePageSource({
+      getPageCount: () => this.book.pages.length,
+      getPageMetadata: index => {
+        const page = this.book.pages[index] ?? null;
+        if (!page) return null;
+        return { aspectRatio: page.aspectRatio, passthrough: page };
+      },
+    });
     this.bookViewer = new BookViewer({
       spreadCanvas,
       stripContainer,
       rendererClass,
       app: this,
+      source: this.pageSource,
       pageStripCallbacks: {
         onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
         getEffectEntry: page => this.getEffectEntry(page),
@@ -104,6 +118,14 @@ export class App {
 
   get renderZoom() {
     return this.zoomController.renderZoom;
+  }
+
+  // The viewer's view of the book — exposes ViewerPages with bitmap getters
+  // proxied to the app's Page. Code that asks "what spread is this", "what
+  // are the pages on this spread", or "how many spreads exist" should read
+  // through this so the viewer's data flow is single-source.
+  get viewerBook() {
+    return this.bookViewer.book;
   }
 
   getEffectEntry(page) {
@@ -172,7 +194,7 @@ export class App {
     });
     this.layoutControlsState = layoutControlsState;
 
-    const maxSpread = Math.max(0, this.book.numSpreads() - 1);
+    const maxSpread = Math.max(0, this.viewerBook.numSpreads() - 1);
     this.uiState.currentSpread = clamp(this.uiState.currentSpread, 0, maxSpread);
     this.uiState.effectiveSpread = this.uiState.currentSpread;
     this.uiState.editingPageIdx = this.book.pages.length
@@ -212,7 +234,7 @@ export class App {
     const scale = this.zoomController.getRenderScale();
     const margins = computeMargins(this.book.layout, scale);
     this.lastMargins = margins;
-    this.uiState.currentSpread = Math.min(this.uiState.currentSpread, this.book.numSpreads() - 1);
+    this.uiState.currentSpread = Math.min(this.uiState.currentSpread, this.viewerBook.numSpreads() - 1);
     this.uiState.effectiveSpread = this.navigationController.getEffectiveSpread();
     this.toolbarController.updateComputedRows(margins);
     this.canvasInteraction.refreshDragCursor();
@@ -253,7 +275,7 @@ export class App {
       });
     }
 
-    this.pageStrip.update(this.book, {
+    this.pageStrip.update(this.viewerBook, {
       ...this.uiState,
       selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
       effectiveSpread: this.navigationController.getEffectiveSpread(),
@@ -330,10 +352,10 @@ export class App {
     // before the prefetch finishes, the queued render either jumps ahead
     // (via priority on the new kickoff) or, if already in flight, is what
     // the navigation is waiting on anyway — same as if we hadn't prefetched.
-    const numSpreads = this.book.numSpreads();
+    const numSpreads = this.viewerBook.numSpreads();
     for (const adj of [targetSpread - 1, targetSpread + 1]) {
       if (adj < 0 || adj >= numSpreads) continue;
-      const { left, right } = this.book.spreadPageEntries(adj);
+      const { left, right } = this.viewerBook.spreadPageEntries(adj);
       for (const pageIndex of [left.pageIndex, right.pageIndex]) {
         if (pageIndex < 0) continue;
         if (this.lazyPageLoader.isPageHighResReady(pageIndex, this.contentZoom)) continue;
@@ -384,6 +406,7 @@ export class App {
       }
 
       this.busyIndicator.setLoadProgress("Finalizing load", processedFiles, totalFiles);
+      this.pageSource.notifyPageCountChanged();
       this.lazyPageLoader.reset();
       this.navigationController.cancelQueuedSpreadTurns();
       this.spreadRenderer.stopAnimation();
@@ -417,13 +440,16 @@ export class App {
 
   onPageReady(pageIndex) {
     const page = this.book.pages[pageIndex];
+    const viewerPage = this.viewerBook.pages[pageIndex] ?? null;
     if (!page) return;
     if (this.spreadRenderer.isAnimating) {
       // Re-point active scenes' pinned source canvases at the new bitmap so
-      // the in-flight animation picks it up on its next frame. The next
-      // `#drawPageSurface` for an affected side will rebuild its surface
-      // canvas + texture once (a one-frame cost), then steady-state resumes.
-      this.spreadRenderer.refreshPageSource?.(page);
+      // the in-flight animation picks it up on its next frame. Scenes hold
+      // ViewerPage refs, so we pass the ViewerPage (not the app's Page).
+      // The next `#drawPageSurface` for an affected side will rebuild its
+      // surface canvas + texture once (a one-frame cost), then steady-state
+      // resumes.
+      if (viewerPage) this.spreadRenderer.refreshPageSource?.(viewerPage);
       // Defer placed-preview rebuild and thumbnail repaint until the turn
       // settles — both are main-thread 2D paints, and a warming book floods
       // this callback hundreds of times during user navigation.
@@ -434,7 +460,7 @@ export class App {
     // upgrade immediately. The placed-preview rebuild + strip thumbnail
     // repaint follow — they're main-thread 2D paints and would otherwise
     // delay the perceived swap by ~5–30 ms.
-    const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
+    const { left, right } = this.viewerBook.spreadPageEntries(this.uiState.currentSpread);
     const isOnCurrentSpread = pageIndex === left.pageIndex || pageIndex === right.pageIndex;
     if (isOnCurrentSpread) {
       // Catch renderZoom up to contentZoom now that a sharper bitmap is in
@@ -446,7 +472,7 @@ export class App {
       this.redraw();
     }
     this.placedPreviewManager.refresh(pageIndex);
-    this.pageStrip.updateThumbnail(pageIndex, page);
+    if (viewerPage) this.pageStrip.updateThumbnail(pageIndex, viewerPage);
     if (isOnCurrentSpread) this.schedulePreviewRedraw();
   }
 

@@ -73,7 +73,7 @@ export class PlacedPreviewManager {
     const sourceCanvas = page.previewCanvas || page.thumbnailSourceCanvas || null;
     if (!sourceCanvas) {
       page.placedPreviewCanvas = null;
-      app.pageStrip.invalidateThumbnail(page);
+      app.pageStrip.invalidateThumbnail(pageIndex);
       return;
     }
     const previewRenderer = typeof app.spreadRenderer.getPlacedPagePreview === "function"
@@ -91,7 +91,7 @@ export class PlacedPreviewManager {
       }
     );
     this.dirtyPageIndexes.delete(pageIndex);
-    app.pageStrip.invalidateThumbnail(page);
+    app.pageStrip.invalidateThumbnail(pageIndex);
   }
 
   refreshAll() {

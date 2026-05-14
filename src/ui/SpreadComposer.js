@@ -36,23 +36,23 @@ export class SpreadComposer {
   }
 
   shouldExposeSpreadRects() {
-    const { book, uiState } = this.app;
-    if (!book.pages.length) return false;
+    const { viewerBook, uiState } = this.app;
+    if (!viewerBook.pages.length) return false;
     if (uiState.appMode === "content") return true;
     return uiState.showLayoutContent;
   }
 
   shouldShowPlaceholder() {
-    const { book, uiState } = this.app;
-    return uiState.appMode === "layout" && !book.pages.length && uiState.showLayoutContent;
+    const { viewerBook, uiState } = this.app;
+    return uiState.appMode === "layout" && !viewerBook.pages.length && uiState.showLayoutContent;
   }
 
   getRenderableSpreadPages(spreadIndex) {
-    const { book, uiState } = this.app;
-    if (uiState.appMode === "layout" && (!uiState.showLayoutContent || !book.pages.length)) {
+    const { viewerBook, uiState } = this.app;
+    if (uiState.appMode === "layout" && (!uiState.showLayoutContent || !viewerBook.pages.length)) {
       return null;
     }
-    const pages = book.spreadPageEntries(spreadIndex);
+    const pages = viewerBook.spreadPageEntries(spreadIndex);
     return {
       left: {
         ...pages.left,

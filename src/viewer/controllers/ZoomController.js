@@ -90,8 +90,8 @@ export class ZoomController {
   #requestHighResAtCurrentZoom() {
     const app = this.app;
     const targetSpread = app.navigationController.getEffectiveSpread();
-    if (targetSpread < 0 || targetSpread >= app.book.numSpreads()) return;
-    const { left, right } = app.book.spreadPageEntries(targetSpread);
+    if (targetSpread < 0 || targetSpread >= app.viewerBook.numSpreads()) return;
+    const { left, right } = app.viewerBook.spreadPageEntries(targetSpread);
     for (const pageIndex of [left.pageIndex, right.pageIndex]) {
       if (pageIndex < 0) continue;
       if (app.lazyPageLoader.isPageHighResReady(pageIndex, this.contentZoom)) continue;
@@ -117,9 +117,9 @@ export class ZoomController {
   }
 
   isSpreadHighResReady(spreadIndex, previewZoom = this.contentZoom) {
-    const { book, lazyPageLoader } = this.app;
-    if (spreadIndex < 0 || spreadIndex >= book.numSpreads()) return true;
-    const { left, right } = book.spreadPageEntries(spreadIndex);
+    const { viewerBook, lazyPageLoader } = this.app;
+    if (spreadIndex < 0 || spreadIndex >= viewerBook.numSpreads()) return true;
+    const { left, right } = viewerBook.spreadPageEntries(spreadIndex);
     return [left.pageIndex, right.pageIndex]
       .filter(index => index >= 0)
       .every(index => lazyPageLoader.isPageHighResReady(index, previewZoom));

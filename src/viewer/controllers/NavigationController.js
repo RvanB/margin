@@ -26,8 +26,8 @@ export class NavigationController {
 
   #kickoffHighResForSpread(spreadIndex) {
     const app = this.app;
-    if (spreadIndex < 0 || spreadIndex >= app.book.numSpreads()) return;
-    const { left, right } = app.book.spreadPageEntries(spreadIndex);
+    if (spreadIndex < 0 || spreadIndex >= app.viewerBook.numSpreads()) return;
+    const { left, right } = app.viewerBook.spreadPageEntries(spreadIndex);
     for (const pageIndex of [left.pageIndex, right.pageIndex]) {
       if (pageIndex < 0) continue;
       if (app.lazyPageLoader.isPageHighResReady(pageIndex, app.contentZoom)) continue;
@@ -45,10 +45,10 @@ export class NavigationController {
 
   queueSpreadTurnsTo(targetSpread, preferredPageIndex = null) {
     const app = this.app;
-    const clampedTarget = Math.max(0, Math.min(targetSpread, app.book.numSpreads() - 1));
+    const clampedTarget = Math.max(0, Math.min(targetSpread, app.viewerBook.numSpreads() - 1));
     const fromSpread = this.getEffectiveSpread();
     const distance = Math.abs(clampedTarget - fromSpread);
-    if (distance <= 1 || !app.lastMargins || !app.book.pages.length) {
+    if (distance <= 1 || !app.lastMargins || !app.viewerBook.pages.length) {
       this.navigateTo(clampedTarget, preferredPageIndex);
       return;
     }
@@ -99,13 +99,13 @@ export class NavigationController {
 
   selectSpreadPage(spreadIndex, preferredPageIndex = null) {
     const app = this.app;
-    if (app.uiState.appMode !== "content" || !app.book.pages.length) return;
-    const { left, right } = app.book.spreadPageEntries(spreadIndex);
+    if (app.uiState.appMode !== "content" || !app.viewerBook.pages.length) return;
+    const { left, right } = app.viewerBook.spreadPageEntries(spreadIndex);
     const spreadPageIndexes = [left.pageIndex, right.pageIndex].filter(index => index >= 0);
     const pageIndex = spreadPageIndexes.includes(preferredPageIndex)
       ? preferredPageIndex
       : (left.pageIndex >= 0 ? left.pageIndex : right.pageIndex);
-    if (pageIndex < 0 || pageIndex >= app.book.pages.length) return;
+    if (pageIndex < 0 || pageIndex >= app.viewerBook.pages.length) return;
     app.placedPreviewManager.endInteractive({ redraw: false });
     app.placedPreviewManager.flushDirty();
     app.uiState.editingPageIdx = pageIndex;
@@ -115,7 +115,7 @@ export class NavigationController {
 
   navigateTo(targetSpread, preferredPageIndex = null, options = {}) {
     const app = this.app;
-    const clampedTarget = Math.max(0, Math.min(targetSpread, app.book.numSpreads() - 1));
+    const clampedTarget = Math.max(0, Math.min(targetSpread, app.viewerBook.numSpreads() - 1));
     if (clampedTarget === this.getEffectiveSpread()) return;
     if (!options.fromQueuedJump) this.cancelQueuedSpreadTurns();
     const fromSpread = this.getEffectiveSpread();
@@ -125,7 +125,7 @@ export class NavigationController {
     app.lazyPageLoader.ensureSpreadLoaded(clampedTarget, 1, { allowHighRes: false });
     if (options.selectPage !== false) this.selectSpreadPage(clampedTarget, preferredPageIndex);
 
-    if (!app.lastMargins || !app.book.pages.length) {
+    if (!app.lastMargins || !app.viewerBook.pages.length) {
       app.uiState.currentSpread = clampedTarget;
       app.uiState.effectiveSpread = clampedTarget;
       this.animationDirection = 0;
@@ -174,7 +174,7 @@ export class NavigationController {
         durationMs: options.durationMs,
       });
       app.schedulePreviewRedraw();
-      app.pageStrip.update(app.book, {
+      app.pageStrip.update(app.viewerBook, {
         ...app.uiState,
         selectedPageIdxs: cloneSet(app.uiState.selectedPageIdxs),
         effectiveSpread: app.uiState.effectiveSpread,

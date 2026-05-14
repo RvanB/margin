@@ -95,7 +95,7 @@ export class CanvasInteraction {
     if (event.target.matches("input, select, textarea")) return;
     const key = typeof event.key === "string" ? event.key.toLowerCase() : event.key;
     const base = app.navigationController.getEffectiveSpread();
-    const max = app.book.numSpreads() - 1;
+    const max = app.viewerBook.numSpreads() - 1;
 
     if ((event.metaKey || event.ctrlKey) && !event.altKey) {
       if (key === "+" || key === "=") {

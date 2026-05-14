@@ -10,14 +10,11 @@ export class PageStrip {
     this.thumbs = [];
   }
 
-  invalidateThumbnail(page) {
-    if (!page) return;
-    for (const record of this.thumbs) {
-      if (record.page === page) {
-        record.paintedSource = null;
-        record.paintedKey = null;
-      }
-    }
+  invalidateThumbnail(pageIndex) {
+    const record = typeof pageIndex === "number" ? this.thumbs[pageIndex] : null;
+    if (!record) return;
+    record.paintedSource = null;
+    record.paintedKey = null;
   }
 
   invalidateAllThumbnails() {
