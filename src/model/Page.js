@@ -17,7 +17,7 @@ export function normalizeContentAlignX(value) {
 export function normalizeContentAlignY(value) {
   return value === "top" || value === "center" || value === "bottom"
     ? value
-    : null;
+    : "top";
 }
 
 export class Page {

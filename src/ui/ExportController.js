@@ -1,7 +1,11 @@
 import { loadImageFile } from "../loading/imageLoader.js";
-import { getPdfPageRasterSourceInfo, renderPdfPage } from "../loading/pdfLoader.js";
-import { computeMargins, getPageGeometry } from "../rendering/layout.js";
-import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
+import {
+  computeMargins,
+  getPageGeometry,
+  getPdfPageRasterSourceInfo,
+  renderPdfPage,
+  SpreadRenderer,
+} from "riffle";
 import { canvasToBlob, getPageSide, parseNumber } from "../util/helpers.js";
 
 export class ExportController {

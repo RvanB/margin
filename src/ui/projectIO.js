@@ -1,5 +1,5 @@
 import { loadImagePreview } from "../loading/imageLoader.js";
-import { getPdfPageAspectRatio, loadPdfDocument } from "../loading/pdfLoader.js";
+import { getPdfPageAspectRatio, loadPdfDocument } from "riffle";
 import { Page, normalizeContentAlignX, normalizeContentAlignY, normalizeFitAxis } from "../model/Page.js";
 import { applyPaperPreset, getPaperPresetIdForColor, normalizePaperPreset } from "../model/paper.js";
 import { SHARED_PREVIEW_SIZE } from "../previewSizing.js";

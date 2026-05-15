@@ -33,7 +33,6 @@ function setNumberInputValue(input, value, { emitChange = false } = {}) {
   const max = input.max === "" ? Infinity : parseNumber(input.max, Infinity);
   const numeric = Math.max(min, Math.min(max, parseNumber(value, parseNumber(input.value, min || 0))));
   input.value = formatNumberInputValue(input, numeric);
-  updateCustomSliderControl(input);
   input.dispatchEvent(new Event("input", { bubbles: true }));
   if (emitChange) input.dispatchEvent(new Event("change", { bubbles: true }));
 }
@@ -117,7 +116,6 @@ export function enhanceCustomSliderInputs(scope) {
         if (direction > 0) input.stepUp();
         else input.stepDown();
         input.dispatchEvent(new Event("input", { bubbles: true }));
-        updateCustomSliderControl(input);
       });
       return button;
     };

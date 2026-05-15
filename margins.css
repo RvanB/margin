@@ -992,11 +992,61 @@ input[type="range"]::-moz-range-progress {
   max-height: none;
 }
 
+#content-edit-layer,
+#layout-preview-layer,
 #overlay-canvas {
   position: absolute;
   left: 0;
   top: 0;
   pointer-events: none;
+}
+
+#content-edit-layer {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#layout-preview-layer {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#content-edit-layer[hidden],
+#layout-preview-layer[hidden] {
+  display: none;
+}
+
+.content-edit-frame,
+.layout-preview-page,
+.layout-preview-clip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: hidden;
+}
+
+.content-edit-frame,
+.layout-preview-page {
+  contain: layout paint style;
+  will-change: transform, width, height;
+}
+
+.layout-preview-clip {
+  will-change: transform, width, height;
+}
+
+.content-edit-image,
+.layout-preview-image {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  max-width: none;
+  max-height: none;
+  transform-origin: 0 0;
+  will-change: transform;
 }
 
 #canvas-controls {

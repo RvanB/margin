@@ -1,4 +1,4 @@
-import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "../rendering/primitives.js";
+import { CROP_HANDLE_LEN, CROP_HANDLE_PAD, CROP_HANDLE_THICK } from "riffle";
 
 function getCanvasCoords(spreadCanvas, event) {
   const rect = spreadCanvas.getBoundingClientRect();
@@ -95,7 +95,7 @@ export class CanvasInteraction {
     if (event.target.matches("input, select, textarea")) return;
     const key = typeof event.key === "string" ? event.key.toLowerCase() : event.key;
     const base = app.navigationController.getEffectiveSpread();
-    const max = app.book.numSpreads() - 1;
+    const max = app.viewerBook.numSpreads() - 1;
 
     if ((event.metaKey || event.ctrlKey) && !event.altKey) {
       if (key === "+" || key === "=") {
@@ -165,7 +165,7 @@ export class CanvasInteraction {
     this.pendingCanvasClick = null;
 
     if (app.uiState.appMode === "layout") {
-      const hit = getSpreadHitTarget(app.uiState.spreadRects, x, y);
+      const hit = getSpreadHitTarget(app.getInteractionSpreadRects(), x, y);
       if (hit?.rect?.pageIndex >= 0) {
         this.pendingCanvasClick = { type: "layout-to-content", pageIndex: hit.rect.pageIndex };
       }
@@ -174,8 +174,8 @@ export class CanvasInteraction {
 
     if (app.uiState.appMode !== "content") return;
 
-    const handleHit = getHandleHitTarget(app.uiState.spreadRects, x, y);
-    const spreadHit = handleHit ?? getSpreadHitTarget(app.uiState.spreadRects, x, y);
+    const handleHit = getHandleHitTarget(app.getInteractionSpreadRects(), x, y);
+    const spreadHit = handleHit ?? getSpreadHitTarget(app.getInteractionSpreadRects(), x, y);
     if (!spreadHit?.rect) {
       this.pendingCanvasClick = { type: "content-to-layout" };
       return;
@@ -227,7 +227,7 @@ export class CanvasInteraction {
     const { x, y } = getCanvasCoords(app.spreadCanvas, event);
 
     if (this.dragHandle) {
-      const sideRect = app.uiState.spreadRects?.[this.dragHandle.side];
+      const sideRect = app.getInteractionSpreadRects()?.[this.dragHandle.side];
       if (!sideRect) return;
       const page = app.book.pages[sideRect.pageIndex];
       if (!page) return;
@@ -244,11 +244,12 @@ export class CanvasInteraction {
         crop.right = Math.max(0, Math.min(sideRect.sw - crop.left - 1, Math.round(this.dragHandle.startCrop.right - dx / sideRect.fitScale)));
       }
       page.setCropFor(page.displayCanvas, crop);
-      app.redraw();
+      app.beginInteractiveEdit();
+      app.redrawContentEditOverlay();
       return;
     }
 
-    const handleHit = getHandleHitTarget(app.uiState.spreadRects, x, y);
+    const handleHit = getHandleHitTarget(app.getInteractionSpreadRects(), x, y);
     const nextHover = handleHit
       ? { side: handleHit.side, edge: handleHit.handle.edge }
       : null;
@@ -256,7 +257,7 @@ export class CanvasInteraction {
     if (nextHover?.side !== prevHover?.side || nextHover?.edge !== prevHover?.edge) {
       app.uiState.hoverHandle = nextHover;
       this.setCursor(nextHover ? cursorForEdge(nextHover.edge) : "default");
-      app.redraw();
+      app.redrawContentEditOverlay();
     }
   }
 
@@ -268,10 +269,13 @@ export class CanvasInteraction {
     this.panOrigin = null;
 
     if (this.dragHandle) {
-      const sideRect = app.uiState.spreadRects?.[this.dragHandle.side];
+      const sideRect = app.getInteractionSpreadRects()?.[this.dragHandle.side];
       if (sideRect?.pageIndex >= 0) app.placedPreviewManager.refresh(sideRect.pageIndex);
       this.dragHandle = null;
       if (!app.uiState.hoverHandle) this.setCursor("default");
+      // Drag is done — settle back to high-res compose + full thumbnail
+      // refresh + a sync redraw.
+      app.endInteractiveEdit();
       return;
     }
 
@@ -303,7 +307,7 @@ export class CanvasInteraction {
     if (app.uiState.hoverHandle) {
       app.uiState.hoverHandle = null;
       this.setCursor("default");
-      app.redraw();
+      app.redrawContentEditOverlay();
     }
   }
 }

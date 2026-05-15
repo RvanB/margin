@@ -104,7 +104,7 @@ export function getEffectiveContentAlignX(book, page) {
 }
 
 export function getEffectiveContentAlignY(page) {
-  return page?.contentAlignY || "center";
+  return page?.contentAlignY || "top";
 }
 
 export function canvasToBlob(canvas, type = "image/png") {

@@ -1,19 +1,22 @@
 import { Book } from "../model/Book.js";
-import { LazyPageLoader } from "../loading/LazyPageLoader.js";
-import { computeMargins } from "../rendering/layout.js";
-import { renderOverlay } from "../rendering/OverlayRenderer.js";
-import { SpreadRenderer } from "../rendering/SpreadRenderer.js";
-import { PageStrip } from "./PageStrip.js";
+import { composeBlankPageCanvas, composePageCanvas } from "../composition/PageComposer.js";
+import {
+  BookViewer,
+  ImagePageSource,
+  PageStrip,
+  computeMargins,
+  getPageGeometry,
+  SpreadRenderer,
+} from "riffle";
+import { measureOverlayDraw, renderContentEditOverlay, renderOverlay } from "./OverlayRenderer.js";
 import { BusyIndicator } from "./BusyIndicator.js";
 import { CanvasInteraction } from "./CanvasInteraction.js";
 import { ExportController } from "./ExportController.js";
 import { InterfaceColors } from "./InterfaceColors.js";
 import { ModalManager } from "./ModalManager.js";
-import { NavigationController } from "./NavigationController.js";
 import { PlacedPreviewManager } from "./PlacedPreviewManager.js";
 import { SpreadComposer } from "./SpreadComposer.js";
 import { ToolbarController } from "./ToolbarController.js";
-import { ZoomController } from "./ZoomController.js";
 import {
   applyProjectDataToBook,
   downloadProjectJson,
@@ -35,7 +38,33 @@ export class App {
   constructor(spreadCanvas, overlayCanvas, stripContainer, { rendererClass = SpreadRenderer } = {}) {
     this.spreadCanvas = spreadCanvas;
     this.overlayCanvas = overlayCanvas;
+    this.contentEditLayer = document.createElement("div");
+    this.contentEditLayer.id = "content-edit-layer";
+    this.contentEditFrame = document.createElement("div");
+    this.contentEditFrame.className = "content-edit-frame";
+    this.contentEditImage = document.createElement("canvas");
+    this.contentEditImage.className = "content-edit-image";
+    this.contentEditFrame.appendChild(this.contentEditImage);
+    this.contentEditLayer.appendChild(this.contentEditFrame);
+    this.contentEditLayer.hidden = true;
+    overlayCanvas.parentNode?.insertBefore(this.contentEditLayer, overlayCanvas);
+    this.contentEditImageCtx = this.contentEditImage.getContext("2d");
+    this.contentEditSourceCanvas = null;
+    this.layoutPreviewLayer = document.createElement("div");
+    this.layoutPreviewLayer.id = "layout-preview-layer";
+    this.layoutPreviewLayer.hidden = true;
+    this.layoutPreviewSides = {
+      left: this.#createLayoutPreviewSide(),
+      right: this.#createLayoutPreviewSide(),
+    };
+    this.layoutPreviewLayer.append(this.layoutPreviewSides.left.frame, this.layoutPreviewSides.right.frame);
+    overlayCanvas.parentNode?.insertBefore(this.layoutPreviewLayer, overlayCanvas);
     this.overlayCtx = overlayCanvas.getContext("2d");
+    this.contentEditSpreadRects = null;
+    this.layoutOverlayPreviewActive = false;
+    this.layoutOverlayPreviewSideStates = null;
+    this.layoutOverlayPreviewFrame = 0;
+    this.layoutOverlayPreviewRendererBlanked = false;
     this.canvasWrap = document.getElementById("canvas-wrap");
     this.canvasArea = document.getElementById("canvas-area");
     this.canvasAreaInner = document.getElementById("canvas-area-inner");
@@ -56,8 +85,6 @@ export class App {
       editingPageIdx: 0,
       selectedPageIdxs: new Set([0]),
       hoverHandle: null,
-      spreadRects: null,
-      spreadSideStates: null,
       showMarginArrows: false,
       showLayoutContent: true,
       showPageBorder: true,
@@ -69,16 +96,69 @@ export class App {
     };
     this.busyIndicator = new BusyIndicator();
     this.lastMargins = computeMargins(this.book.layout, 1);
-    this.spreadRenderer = new rendererClass(spreadCanvas);
-    globalThis.__rendererBackend = this.spreadRenderer.backendName;
-    document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
-    this.lazyPageLoader = new LazyPageLoader(this.book, pageIndex => this.onPageReady(pageIndex));
+    // The page source bridges the margin app's Book/Page model to the viewer.
+    // Until Phase 3 decouples composition, the metadata's `passthrough` field
+    // is the app's Page instance — the renderer reads its placement fields
+    // (crop, fitAxis, etc.) and the lazy loader writes bitmaps onto it.
+    this.pageSource = new ImagePageSource({
+      getPageCount: () => this.book.pages.length,
+      getPageMetadata: index => {
+        const page = this.book.pages[index] ?? null;
+        if (!page) return null;
+        return { aspectRatio: page.aspectRatio, passthrough: page };
+      },
+      // The viewer's LazyPageLoader writes srcCanvas/previewCanvas onto our
+      // app.book.Page instances; expose the book so it can find them.
+      internalBook: this.book,
+    });
+    this.bookViewer = new BookViewer({
+      spreadCanvas,
+      viewport: document.getElementById("canvas-area"),
+      rendererClass,
+      source: this.pageSource,
+      layout: this.book.layout,
+      display: this.book.display,
+    });
     this.pageStrip = new PageStrip(stripContainer, {
       onPageClick: (pageIndex, event) => this.handlePageStripClick(pageIndex, event),
       getEffectEntry: page => this.getEffectEntry(page),
       getDisplay: () => this.book.display,
       getLayout: () => this.book.layout,
     });
+    // Wire viewer events to keep the margin-owned page strip in sync.
+    this.bookViewer.on("sourcechange", () => this.pageStrip.update(this.viewerBook, this.#stripState()));
+    this.bookViewer.on("beforenavigate", () => {
+      if (this.uiState.appMode === "content") this.#setMode("layout", { resetNavigation: false });
+    });
+    this.bookViewer.on("spreadchange", ({ spreadIndex }) => {
+      this.uiState.currentSpread = spreadIndex;
+      this.uiState.effectiveSpread = spreadIndex;
+      // Move the editing selection onto the new spread's pages so crop
+      // handles, the per-page toolbar, etc. apply to the newly-visible
+      // page. Prefer the right page (or the only page on the cover).
+      this.#selectSpreadForEditing(spreadIndex);
+      this.pageStrip.update(this.viewerBook, this.#stripState());
+    });
+    // Scroll-track the strip with each in-flight navigation step (including
+    // every spread of a queued multi-spread turn).
+    this.bookViewer.on("effectivespreadchange", ({ spreadIndex }) => {
+      this.uiState.effectiveSpread = spreadIndex;
+      this.pageStrip.update(this.viewerBook, this.#stripState());
+    });
+    this.bookViewer.on("pageready", ({ pageIndex }) => {
+      // Compose first so the viewer's subsequent redraw reads through
+      // composedDisplayCanvas / composedPreviewCanvas instead of the raw
+      // PDF rasterization. (Riffle emits "pageready" before its internal
+      // redraw exactly so hosts can do this.)
+      this.composePage(pageIndex);
+      this.placedPreviewManager.refresh(pageIndex, { repaintThumbnail: true });
+    });
+    this.spreadRenderer = this.bookViewer.spreadRenderer;
+    this.lazyPageLoader = this.bookViewer.lazyPageLoader;
+    this.navigationController = this.bookViewer.navigationController;
+    this.zoomController = this.bookViewer.zoomController;
+    globalThis.__rendererBackend = this.spreadRenderer.backendName;
+    document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
     this.exportController = new ExportController({
       book: this.book,
       spreadRenderer: this.spreadRenderer,
@@ -87,11 +167,289 @@ export class App {
       getEffectEntry: page => this.getEffectEntry(page),
     });
     this.canvasInteraction = new CanvasInteraction(this);
-    this.navigationController = new NavigationController(this);
-    this.zoomController = new ZoomController(this);
     this.toolbarController = new ToolbarController(this);
     this.spreadComposer = new SpreadComposer(this);
     this.placedPreviewManager = new PlacedPreviewManager(this);
+
+    // Interactive editing state. When true, redraws use cheaper paths
+    // (preview-resolution compose, deferred thumbnail refresh) so slider /
+    // crop-handle drags stay smooth. Toggles via beginInteractiveEdit() /
+    // endInteractiveEdit() — endInteractiveEdit is auto-fired by a 300 ms
+    // tail timer after the last edit input.
+    this.isInteractiveEdit = false;
+    this.interactiveEditTimer = 0;
+    this.redrawScheduled = false;
+  }
+
+  // Mark the app as in "drag" mode. Subsequent redraws use the cheap path.
+  // Auto-resets 300 ms after the last call (a "settling" timer).
+  beginInteractiveEdit() {
+    this.isInteractiveEdit = true;
+    this.placedPreviewManager.pauseBackgroundRefresh();
+    if (this.interactiveEditTimer) clearTimeout(this.interactiveEditTimer);
+    this.interactiveEditTimer = setTimeout(() => {
+      this.interactiveEditTimer = 0;
+      this.endInteractiveEdit();
+    }, 300);
+  }
+
+  beginLayoutOverlayPreview() {
+    this.beginInteractiveEdit();
+    if (!this.layoutOverlayPreviewActive) {
+      this.layoutOverlayPreviewActive = true;
+      this.layoutOverlayPreviewRendererBlanked = false;
+    }
+  }
+
+  scheduleLayoutOverlayPreview() {
+    this.beginLayoutOverlayPreview();
+    if (this.layoutOverlayPreviewFrame) return;
+    this.layoutOverlayPreviewFrame = requestAnimationFrame(() => {
+      this.layoutOverlayPreviewFrame = 0;
+      if (this.layoutOverlayPreviewActive) this.previewLayoutOverlay();
+    });
+  }
+
+  endInteractiveEdit() {
+    if (!this.isInteractiveEdit) return;
+    this.isInteractiveEdit = false;
+    if (this.layoutOverlayPreviewFrame) {
+      cancelAnimationFrame(this.layoutOverlayPreviewFrame);
+      this.layoutOverlayPreviewFrame = 0;
+    }
+    if (this.interactiveEditTimer) {
+      clearTimeout(this.interactiveEditTimer);
+      this.interactiveEditTimer = 0;
+    }
+    // Now do the work we deferred: high-res compose of the visible spread,
+    // any queued preview refresh for layout edits, and a final redraw.
+    this.layoutOverlayPreviewActive = false;
+    this.layoutOverlayPreviewRendererBlanked = false;
+    this.layoutOverlayPreviewSideStates = null;
+    this.#hideLayoutPreviewDom();
+    this.#composeVisibleSpread();
+    if (this.uiState.appMode === "layout") {
+      this.placedPreviewManager.flushPendingRefreshAll();
+    }
+    this.redraw();
+  }
+
+  // rAF-throttled redraw — coalesces back-to-back input events into one
+  // render per frame. Use this from any drag/slider path. Settled callers
+  // (navigation onDone, etc.) can still call redraw() directly for
+  // synchronous behavior.
+  scheduleRedraw() {
+    if (this.redrawScheduled) return;
+    this.redrawScheduled = true;
+    requestAnimationFrame(() => {
+      this.redrawScheduled = false;
+      this.redraw();
+    });
+  }
+
+  redrawContentEditOverlay() {
+    if (this.overlayCanvas.width !== this.spreadCanvas.width) this.overlayCanvas.width = this.spreadCanvas.width;
+    if (this.overlayCanvas.height !== this.spreadCanvas.height) this.overlayCanvas.height = this.spreadCanvas.height;
+    const contentBlendMode = this.book.display.contentBlendMode || "multiply";
+    const cssBlendMode = contentBlendMode === "source-over" ? "normal" : contentBlendMode;
+    this.contentEditLayer.style.mixBlendMode = this.uiState.appMode === "content" ? cssBlendMode : "normal";
+    this.layoutPreviewLayer.style.mixBlendMode = this.layoutOverlayPreviewActive ? cssBlendMode : "normal";
+
+    const geometry = this.layoutOverlayPreviewActive
+      ? null
+      : this.bookViewer.getSpreadGeometry();
+    const sideStates = this.layoutOverlayPreviewActive
+      ? this.layoutOverlayPreviewSideStates
+      : geometry?.sideStates ?? null;
+    let editHit = null;
+    if (this.layoutOverlayPreviewActive) {
+      this.#hideContentEditDom();
+      this.#updateLayoutPreviewDom(sideStates);
+    } else {
+      this.#hideLayoutPreviewDom();
+      editHit = renderContentEditOverlay(this.book, this.uiState, {
+        spreadSideStates: sideStates,
+      });
+      this.#updateContentEditDom(editHit);
+    }
+    const spreadRects = geometry?.spreadRects
+      ? { ...geometry.spreadRects }
+      : null;
+    if (spreadRects && editHit?.side) {
+      spreadRects[editHit.side] = editHit.rect;
+    }
+    this.contentEditSpreadRects = this.uiState.appMode === "content" ? spreadRects : null;
+    renderOverlay(this.overlayCtx, this.lastMargins, this.uiState, {
+      paperColor: this.book.display.paperColor,
+      spreadRects: this.spreadComposer.shouldExposeSpreadRects()
+        ? spreadRects
+        : null,
+      spreadSideStates: sideStates,
+    });
+  }
+
+  #hideContentEditDom() {
+    this.contentEditLayer.hidden = true;
+    this.contentEditSourceCanvas = null;
+  }
+
+  #createLayoutPreviewSide() {
+    const frame = document.createElement("div");
+    frame.className = "layout-preview-page";
+    const clip = document.createElement("div");
+    clip.className = "layout-preview-clip";
+    const image = document.createElement("canvas");
+    image.className = "layout-preview-image";
+    clip.appendChild(image);
+    frame.appendChild(clip);
+    return {
+      frame,
+      clip,
+      image,
+      ctx: image.getContext("2d"),
+      sourceCanvas: null,
+    };
+  }
+
+  #hideLayoutPreviewDom() {
+    this.layoutPreviewLayer.hidden = true;
+    for (const preview of Object.values(this.layoutPreviewSides)) {
+      preview.sourceCanvas = null;
+    }
+  }
+
+  #updateLayoutPreviewDom(sideStates) {
+    if (!sideStates) {
+      this.#hideLayoutPreviewDom();
+      return;
+    }
+    this.layoutPreviewLayer.hidden = false;
+    for (const side of ["left", "right"]) {
+      const preview = this.layoutPreviewSides[side];
+      const sideState = sideStates[side];
+      const pageIndex = sideState?.pageIndex ?? -1;
+      const page = this.book.pages[pageIndex] ?? null;
+      const sourceCanvas = page?.displayCanvas ?? null;
+      const measurement = page && measureOverlayDraw(page, sideState, sourceCanvas);
+      const pageRect = sideState?.pageRect;
+      if (!sourceCanvas || !measurement || !pageRect) {
+        preview.frame.hidden = true;
+        preview.sourceCanvas = null;
+        continue;
+      }
+      this.#syncLayoutPreviewSource(preview, sourceCanvas);
+      const clip = measurement.clipRect ?? pageRect;
+      const draw = measurement.drawRect;
+      preview.frame.hidden = false;
+      Object.assign(preview.frame.style, {
+        width: `${Math.round(pageRect.w)}px`,
+        height: `${Math.round(pageRect.h)}px`,
+        transform: `translate(${Math.round(pageRect.x)}px, ${Math.round(pageRect.y)}px)`,
+      });
+      Object.assign(preview.clip.style, {
+        width: `${Math.round(clip.w)}px`,
+        height: `${Math.round(clip.h)}px`,
+        transform: `translate(${Math.round(clip.x - pageRect.x)}px, ${Math.round(clip.y - pageRect.y)}px)`,
+      });
+      Object.assign(preview.image.style, {
+        transform: `translate(${draw.x - clip.x}px, ${draw.y - clip.y}px) scale(${draw.w / sourceCanvas.width}, ${draw.h / sourceCanvas.height})`,
+      });
+    }
+  }
+
+  #syncLayoutPreviewSource(preview, sourceCanvas) {
+    if (
+      preview.sourceCanvas === sourceCanvas &&
+      preview.image.width === sourceCanvas.width &&
+      preview.image.height === sourceCanvas.height
+    ) {
+      return;
+    }
+    preview.sourceCanvas = sourceCanvas;
+    preview.image.width = sourceCanvas.width;
+    preview.image.height = sourceCanvas.height;
+    preview.ctx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+    preview.ctx.drawImage(sourceCanvas, 0, 0);
+    Object.assign(preview.image.style, {
+      width: `${sourceCanvas.width}px`,
+      height: `${sourceCanvas.height}px`,
+    });
+  }
+
+  #updateContentEditDom(editHit) {
+    if (this.uiState.appMode !== "content" || !editHit?.sourceCanvas || !editHit?.measurement) {
+      this.#hideContentEditDom();
+      return;
+    }
+    const { sourceCanvas, measurement } = editHit;
+    if (
+      this.contentEditSourceCanvas !== sourceCanvas ||
+      this.contentEditImage.width !== sourceCanvas.width ||
+      this.contentEditImage.height !== sourceCanvas.height
+    ) {
+      this.contentEditSourceCanvas = sourceCanvas;
+      this.contentEditImage.width = sourceCanvas.width;
+      this.contentEditImage.height = sourceCanvas.height;
+      this.contentEditImageCtx.clearRect(0, 0, sourceCanvas.width, sourceCanvas.height);
+      this.contentEditImageCtx.drawImage(sourceCanvas, 0, 0);
+      Object.assign(this.contentEditImage.style, {
+        width: `${sourceCanvas.width}px`,
+        height: `${sourceCanvas.height}px`,
+      });
+    }
+
+    const visible = measurement.visibleRect;
+    const draw = measurement.drawRect;
+    this.contentEditLayer.hidden = false;
+    Object.assign(this.contentEditFrame.style, {
+      width: `${visible.w}px`,
+      height: `${visible.h}px`,
+      transform: `translate(${visible.x}px, ${visible.y}px)`,
+    });
+    Object.assign(this.contentEditImage.style, {
+      transform: `translate(${draw.x - visible.x}px, ${draw.y - visible.y}px) scale(${draw.w / sourceCanvas.width}, ${draw.h / sourceCanvas.height})`,
+    });
+  }
+
+  previewLayoutOverlay() {
+    this.toolbarController.syncBookLayoutFromInputs();
+    const margins = computeMargins(this.book.layout, this.zoomController.getRenderScale());
+    this.lastMargins = margins;
+    this.toolbarController.updateComputedRows(margins);
+    this.layoutOverlayPreviewSideStates = this.#getPreviewSpreadSideStates(margins);
+    this.#blankLayoutPreviewRenderer();
+    this.redrawContentEditOverlay();
+  }
+
+  #blankLayoutPreviewRenderer() {
+    if (this.layoutOverlayPreviewRendererBlanked) return;
+    this.layoutOverlayPreviewRendererBlanked = true;
+    this.#composeVisibleSpread();
+    this.bookViewer.redraw();
+  }
+
+  #getPreviewSpreadSideStates(margins) {
+    const spreadIndex = this.navigationController.getEffectiveSpread();
+    const entries = this.viewerBook.spreadPageEntries(spreadIndex);
+    const build = (side, entry) => {
+      const page = entry?.page ?? null;
+      const geometry = getPageGeometry(
+        margins,
+        side,
+        page,
+        side === "left" ? 0 : margins.pagePxW,
+      );
+      return {
+        side,
+        page,
+        pageIndex: entry?.pageIndex ?? -1,
+        ...geometry,
+      };
+    };
+    return {
+      left: build("left", entries.left),
+      right: build("right", entries.right),
+    };
   }
 
   get contentZoom() {
@@ -102,8 +460,110 @@ export class App {
     return this.zoomController.renderZoom;
   }
 
+  // The viewer's view of the book — exposes ViewerPages with bitmap getters
+  // proxied to the app's Page. Code that asks "what spread is this", "what
+  // are the pages on this spread", or "how many spreads exist" should read
+  // through this so the viewer's data flow is single-source.
+  get viewerBook() {
+    return this.bookViewer.book;
+  }
+
+  // Spread rects from the viewer's latest render, gated by whether
+  // interactions should be live (i.e., content mode or layout mode with
+  // content shown). Used by CanvasInteraction for hit-testing.
+  getInteractionSpreadRects() {
+    if (!this.spreadComposer.shouldExposeSpreadRects()) return null;
+    if (this.uiState.appMode === "content" && this.contentEditSpreadRects) return this.contentEditSpreadRects;
+    return this.bookViewer.getSpreadGeometry()?.spreadRects ?? null;
+  }
+
+  #stripState() {
+    return {
+      ...this.uiState,
+      selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
+      effectiveSpread: this.navigationController.getEffectiveSpread(),
+    };
+  }
+
+  #selectSpreadForEditing(spreadIndex) {
+    if (this.uiState.appMode !== "content") return;
+    const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
+    const candidates = [left.pageIndex, right.pageIndex].filter(i => i >= 0 && i < this.viewerBook.pages.length);
+    if (!candidates.length) return;
+    // Keep the previously-edited page if it's on this spread; otherwise
+    // default to the left page (or the right one if there's no left).
+    const previous = this.uiState.editingPageIdx;
+    const next = candidates.includes(previous) ? previous : candidates[0];
+    if (next === previous && this.uiState.selectedPageIdxs.size === 1 && this.uiState.selectedPageIdxs.has(next)) return;
+    this.placedPreviewManager.endInteractive({ redraw: false });
+    this.placedPreviewManager.flushDirty();
+    this.uiState.editingPageIdx = next;
+    this.uiState.selectedPageIdxs = new Set([next]);
+    this.toolbarController.syncPageUI();
+  }
+
   getEffectEntry(page) {
     return this.spreadComposer.getEffectEntry(page);
+  }
+
+  // Compose a page's bitmaps into "ready to display" canvases. Called when
+  // a fresh source bitmap arrives via LazyPageLoader, and whenever
+  // layout/page settings change. The viewer reads these via ViewerPage's
+  // displayCanvas / previewCanvas getters.
+  composePage(pageIndex) {
+    const page = this.book.pages[pageIndex];
+    if (!page) return;
+    const sideName = pageIndex % 2 === 1 ? "left" : "right";
+    const layout = this.book.layout;
+    if (
+      (this.uiState.appMode === "content" && pageIndex === this.uiState.editingPageIdx) ||
+      (this.layoutOverlayPreviewActive && this.#isPageOnCurrentSpread(pageIndex))
+    ) {
+      page.composedDisplayCanvas = composeBlankPageCanvas({
+        layout,
+        fill: "#ffffff",
+      });
+    } else if (page.srcCanvas) {
+      page.composedDisplayCanvas = composePageCanvas({
+        page,
+        sourceBitmap: page.srcCanvas,
+        layout,
+        sideName,
+      });
+    } else {
+      page.composedDisplayCanvas = null;
+    }
+    if (page.previewCanvas) {
+      page.composedPreviewCanvas = composePageCanvas({
+        page,
+        sourceBitmap: page.previewCanvas,
+        layout,
+        sideName,
+      });
+    } else {
+      page.composedPreviewCanvas = null;
+    }
+  }
+
+  #isPageOnCurrentSpread(pageIndex) {
+    const spreadIndex = this.bookViewer.currentSpread;
+    if (spreadIndex < 0) return false;
+    const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
+    return pageIndex === left.pageIndex || pageIndex === right.pageIndex;
+  }
+
+  composeAllLoadedPages() {
+    this.book.pages.forEach((_, pageIndex) => this.composePage(pageIndex));
+  }
+
+  #composeVisibleSpread() {
+    // bookViewer owns the navigation state; margin's uiState.currentSpread
+    // is stale unless we explicitly sync it. Read from the viewer.
+    const spreadIndex = this.bookViewer.currentSpread;
+    if (spreadIndex < 0) return;
+    const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
+    if (left?.pageIndex >= 0) this.composePage(left.pageIndex);
+    if (right?.pageIndex >= 0) this.composePage(right.pageIndex);
   }
 
   init() {
@@ -168,7 +628,7 @@ export class App {
     });
     this.layoutControlsState = layoutControlsState;
 
-    const maxSpread = Math.max(0, this.book.numSpreads() - 1);
+    const maxSpread = Math.max(0, this.viewerBook.numSpreads() - 1);
     this.uiState.currentSpread = clamp(this.uiState.currentSpread, 0, maxSpread);
     this.uiState.effectiveSpread = this.uiState.currentSpread;
     this.uiState.editingPageIdx = this.book.pages.length
@@ -208,52 +668,32 @@ export class App {
     const scale = this.zoomController.getRenderScale();
     const margins = computeMargins(this.book.layout, scale);
     this.lastMargins = margins;
-    this.uiState.currentSpread = Math.min(this.uiState.currentSpread, this.book.numSpreads() - 1);
+    this.uiState.currentSpread = Math.min(this.uiState.currentSpread, this.viewerBook.numSpreads() - 1);
     this.uiState.effectiveSpread = this.navigationController.getEffectiveSpread();
     this.toolbarController.updateComputedRows(margins);
     this.canvasInteraction.refreshDragCursor();
 
-    if (
-      this.book.pages.length &&
-      (this.uiState.appMode === "content" || this.uiState.showLayoutContent)
-    ) {
-      this.lazyPageLoader.ensureSpreadLoaded(this.uiState.currentSpread, 1, { allowHighRes: false });
-    }
+    // Push margin-owned settings into the viewer in case they changed.
+    this.bookViewer.layout = this.book.layout;
+    this.bookViewer.display = this.book.display;
+    this.bookViewer.showPageBorder = this.uiState.showPageBorder;
 
-    const spreadPages = this.spreadComposer.getRenderableSpreadPages(this.uiState.currentSpread);
+    // Compose visible pages so their composedDisplayCanvas is fresh before
+    // the viewer reads through ViewerPage.displayCanvas during its render.
+    this.#composeVisibleSpread();
 
-    const renderResult = this.spreadRenderer.render(
-      spreadPages,
-      margins,
-      {
-        left: spreadPages?.left?.page ? this.getEffectEntry(spreadPages.left.page) : { pipeline: [], key: "" },
-        right: spreadPages?.right?.page ? this.getEffectEntry(spreadPages.right.page) : { pipeline: [], key: "" },
-      },
-      this.book.display,
-      {
-        showPlaceholder: this.spreadComposer.shouldShowPlaceholder(),
-        previewZoom: this.renderZoom,
-        showPageBorder: this.uiState.showPageBorder,
-      }
-    );
-
-    this.overlayCanvas.width = this.spreadCanvas.width;
-    this.overlayCanvas.height = this.spreadCanvas.height;
-    this.uiState.spreadSideStates = renderResult.sideStates;
-    this.uiState.spreadRects = this.spreadComposer.shouldExposeSpreadRects() ? renderResult.spreadRects : null;
-    this.zoomController.syncCanvasStage();
+    // Viewer renders. It uses its internal LazyPageLoader against our
+    // app.book (because ImagePageSource.getInternalBook returns it) and
+    // reads display/layout off bookViewer (which we just synced).
+    this.bookViewer.redraw();
 
     if (!this.spreadRenderer.isAnimating) {
-      renderOverlay(this.overlayCtx, margins, this.uiState, {
-        paperColor: this.book.display.paperColor,
-      });
+      this.redrawContentEditOverlay();
     }
 
-    this.pageStrip.update(this.book, {
-      ...this.uiState,
-      selectedPageIdxs: cloneSet(this.uiState.selectedPageIdxs),
-      effectiveSpread: this.navigationController.getEffectiveSpread(),
-    });
+    if (!this.isInteractiveEdit && !this.placedPreviewManager.isRefreshAllQueued) {
+      this.pageStrip.update(this.viewerBook, this.#stripState());
+    }
   }
 
   handlePageStripClick(pageIndex, event) {
@@ -308,16 +748,10 @@ export class App {
   }
 
   schedulePreviewRedraw() {
-    // Hold off entirely while a turn is animating — the post-animation
-    // onDone callback calls this again once it's safe to load high-res and
-    // trigger redraws.
-    if (this.spreadRenderer.isAnimating) return;
-    const targetSpread = this.navigationController.getEffectiveSpread();
-    if (this.book.pages.length) {
-      this.lazyPageLoader.ensureSpreadLoaded(targetSpread, this.contentZoom, { allowHighRes: true });
-      this.#prefetchAdjacentHighRes(targetSpread);
-    }
-    if (this.zoomController.applySafeRenderZoom()) this.redraw();
+    // Delegate to the viewer — it does the same work (LRU prefetch +
+    // safe-render-zoom + redraw) and is also called internally on
+    // navigation/zoom changes.
+    this.bookViewer.schedulePreviewRedraw();
   }
 
   #prefetchAdjacentHighRes(targetSpread) {
@@ -326,10 +760,10 @@ export class App {
     // before the prefetch finishes, the queued render either jumps ahead
     // (via priority on the new kickoff) or, if already in flight, is what
     // the navigation is waiting on anyway — same as if we hadn't prefetched.
-    const numSpreads = this.book.numSpreads();
+    const numSpreads = this.viewerBook.numSpreads();
     for (const adj of [targetSpread - 1, targetSpread + 1]) {
       if (adj < 0 || adj >= numSpreads) continue;
-      const { left, right } = this.book.spreadPageEntries(adj);
+      const { left, right } = this.viewerBook.spreadPageEntries(adj);
       for (const pageIndex of [left.pageIndex, right.pageIndex]) {
         if (pageIndex < 0) continue;
         if (this.lazyPageLoader.isPageHighResReady(pageIndex, this.contentZoom)) continue;
@@ -380,6 +814,7 @@ export class App {
       }
 
       this.busyIndicator.setLoadProgress("Finalizing load", processedFiles, totalFiles);
+      this.pageSource.notifyPageCountChanged();
       this.lazyPageLoader.reset();
       this.navigationController.cancelQueuedSpreadTurns();
       this.spreadRenderer.stopAnimation();
@@ -413,13 +848,21 @@ export class App {
 
   onPageReady(pageIndex) {
     const page = this.book.pages[pageIndex];
+    const viewerPage = this.viewerBook.pages[pageIndex] ?? null;
     if (!page) return;
+    // Always compose on bitmap arrival — this is how pages that aren't the
+    // current spread (e.g., intermediate spreads in a queued multi-spread
+    // turn, or any neighbor whose preview just loaded) end up with margins
+    // applied. Composing the preview alone is cheap; the visible spread
+    // gets composed again in #composeVisibleSpread but the cost is small.
+    this.composePage(pageIndex);
     if (this.spreadRenderer.isAnimating) {
-      // Re-point active scenes' pinned source canvases at the new bitmap so
-      // the in-flight animation picks it up on its next frame. The next
-      // `#drawPageSurface` for an affected side will rebuild its surface
-      // canvas + texture once (a one-frame cost), then steady-state resumes.
-      this.spreadRenderer.refreshPageSource?.(page);
+      // Re-point active scenes' pinned source canvases at the new bitmap.
+      // Scenes hold ViewerPage refs, so we pass the ViewerPage (not the
+      // app's Page). The next `#drawPageSurface` for an affected side will
+      // rebuild its texture upload once (a one-frame cost), then steady-
+      // state resumes.
+      if (viewerPage) this.spreadRenderer.refreshPageSource?.(viewerPage);
       // Defer placed-preview rebuild and thumbnail repaint until the turn
       // settles — both are main-thread 2D paints, and a warming book floods
       // this callback hundreds of times during user navigation.
@@ -430,7 +873,7 @@ export class App {
     // upgrade immediately. The placed-preview rebuild + strip thumbnail
     // repaint follow — they're main-thread 2D paints and would otherwise
     // delay the perceived swap by ~5–30 ms.
-    const { left, right } = this.book.spreadPageEntries(this.uiState.currentSpread);
+    const { left, right } = this.viewerBook.spreadPageEntries(this.uiState.currentSpread);
     const isOnCurrentSpread = pageIndex === left.pageIndex || pageIndex === right.pageIndex;
     if (isOnCurrentSpread) {
       // Catch renderZoom up to contentZoom now that a sharper bitmap is in
@@ -441,19 +884,20 @@ export class App {
       this.zoomController.applySafeRenderZoom();
       this.redraw();
     }
-    this.placedPreviewManager.refresh(pageIndex);
-    this.pageStrip.updateThumbnail(pageIndex, page);
+    this.placedPreviewManager.refresh(pageIndex, { repaintThumbnail: true });
     if (isOnCurrentSpread) this.schedulePreviewRedraw();
   }
 
-  switchMode(mode) {
+  #setMode(mode, { resetNavigation = true } = {}) {
     if (this.busyIndicator.isExporting) return;
     if (mode === this.uiState.appMode) return;
     if (this.uiState.appMode === "content") this.placedPreviewManager.flushDirty();
     this.placedPreviewManager.endInteractive({ redraw: false });
-    this.navigationController.cancelQueuedSpreadTurns();
-    this.spreadRenderer.stopAnimation();
-    this.navigationController.resetAnimationState();
+    if (resetNavigation) {
+      this.navigationController.cancelQueuedSpreadTurns();
+      this.spreadRenderer.stopAnimation();
+      this.navigationController.resetAnimationState();
+    }
     this.spreadComposer.reset();
     this.overlayCanvas.style.visibility = "";
     this.toolbarController.clearListeners();
@@ -470,6 +914,10 @@ export class App {
     }
 
     this.redraw();
+  }
+
+  switchMode(mode) {
+    this.#setMode(mode);
   }
 
   bindGlobalListeners() {
