@@ -202,6 +202,13 @@ export class ToolbarController {
 
   initLayoutListeners() {
     const app = this.app;
+    const interactiveRedraw = () => {
+      app.beginInteractiveEdit();
+      app.scheduleRedraw();
+    };
+    const interactiveOverlay = () => {
+      app.scheduleLayoutOverlayPreview();
+    };
     this.#addListener("page-ratio", "change", event => {
       const ratio = parseFloat(event.target.value);
       if (!ratio || ratio <= 0) return;
@@ -223,7 +230,7 @@ export class ToolbarController {
       } else {
         document.getElementById("page-ratio").value = (pw / this.#getNumber("ph")).toFixed(3);
       }
-      app.redraw();
+      interactiveRedraw();
     });
 
     this.#addListener("ph", "input", () => {
@@ -234,11 +241,11 @@ export class ToolbarController {
       } else {
         document.getElementById("page-ratio").value = (this.#getNumber("pw") / ph).toFixed(3);
       }
-      app.redraw();
+      interactiveRedraw();
     });
 
-    ["ratio", "m-inner", "m-top", "m-bottom"].forEach(id => this.#addListener(id, "input", () => app.redraw()));
-    this.#addListener("b-input", "input", () => app.redraw());
+    ["ratio", "m-inner", "m-top", "m-bottom"].forEach(id => this.#addListener(id, "input", interactiveOverlay));
+    this.#addListener("b-input", "input", interactiveOverlay);
     this.#addListener("ratio-same-as-page", "change", () => app.redraw());
     this.#addListener("preserve-ratio", "change", () => app.redraw());
     this.#addListener("vdg-snap", "click", () => {

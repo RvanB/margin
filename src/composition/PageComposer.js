@@ -179,6 +179,22 @@ export function composePageCanvas({
   return canvas;
 }
 
+export function composeBlankPageCanvas({
+  layout,
+  scaleOverride = 96,
+  fill = "#ffffff",
+} = {}) {
+  if (!layout) return null;
+  const margins = computeMargins(layout, scaleOverride);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.min(MAX_PAGE_SURFACE_EDGE, Math.round(margins.pagePxW)));
+  canvas.height = Math.max(1, Math.min(MAX_PAGE_SURFACE_EDGE, Math.round(margins.pagePxH)));
+  const ctx = get2dContext(canvas);
+  ctx.fillStyle = fill;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
 // Compose a thumbnail-sized canvas with paper color and content blend mode
 // applied. Used by PageStrip/PlacedPreviewManager. Output height is
 // `targetHeight` (default 1024); width follows layout's paper aspect.

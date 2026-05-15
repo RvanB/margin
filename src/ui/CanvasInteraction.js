@@ -244,7 +244,8 @@ export class CanvasInteraction {
         crop.right = Math.max(0, Math.min(sideRect.sw - crop.left - 1, Math.round(this.dragHandle.startCrop.right - dx / sideRect.fitScale)));
       }
       page.setCropFor(page.displayCanvas, crop);
-      app.redraw();
+      app.beginInteractiveEdit();
+      app.redrawContentEditOverlay();
       return;
     }
 
@@ -256,7 +257,7 @@ export class CanvasInteraction {
     if (nextHover?.side !== prevHover?.side || nextHover?.edge !== prevHover?.edge) {
       app.uiState.hoverHandle = nextHover;
       this.setCursor(nextHover ? cursorForEdge(nextHover.edge) : "default");
-      app.redraw();
+      app.redrawContentEditOverlay();
     }
   }
 
@@ -272,6 +273,9 @@ export class CanvasInteraction {
       if (sideRect?.pageIndex >= 0) app.placedPreviewManager.refresh(sideRect.pageIndex);
       this.dragHandle = null;
       if (!app.uiState.hoverHandle) this.setCursor("default");
+      // Drag is done — settle back to high-res compose + full thumbnail
+      // refresh + a sync redraw.
+      app.endInteractiveEdit();
       return;
     }
 
@@ -303,7 +307,7 @@ export class CanvasInteraction {
     if (app.uiState.hoverHandle) {
       app.uiState.hoverHandle = null;
       this.setCursor("default");
-      app.redraw();
+      app.redrawContentEditOverlay();
     }
   }
 }
