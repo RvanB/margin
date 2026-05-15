@@ -179,6 +179,7 @@ export class App {
     this.isInteractiveEdit = false;
     this.interactiveEditTimer = 0;
     this.redrawScheduled = false;
+    this.displayRedrawScheduled = false;
   }
 
   // Mark the app as in "drag" mode. Subsequent redraws use the cheap path.
@@ -245,6 +246,24 @@ export class App {
       this.redrawScheduled = false;
       this.redraw();
     });
+  }
+
+  scheduleDisplayRedraw() {
+    if (this.displayRedrawScheduled) return;
+    this.displayRedrawScheduled = true;
+    requestAnimationFrame(() => {
+      this.displayRedrawScheduled = false;
+      this.redrawDisplayOnly();
+    });
+  }
+
+  redrawDisplayOnly() {
+    globalThis.__rendererBackend = this.spreadRenderer.backendName;
+    document.documentElement.dataset.rendererBackend = this.spreadRenderer.backendName;
+    this.bookViewer.layout = this.#getRendererLayout();
+    this.bookViewer.display = this.book.display;
+    this.bookViewer.showPageBorder = this.uiState.showPageBorder;
+    this.bookViewer.redraw();
   }
 
   redrawContentEditOverlay() {
@@ -398,16 +417,15 @@ export class App {
       });
     }
 
-    const visible = measurement.visibleRect;
     const draw = measurement.drawRect;
     this.contentEditLayer.hidden = false;
     Object.assign(this.contentEditFrame.style, {
-      width: `${visible.w}px`,
-      height: `${visible.h}px`,
-      transform: `translate(${visible.x}px, ${visible.y}px)`,
+      width: `${draw.w}px`,
+      height: `${draw.h}px`,
+      transform: `translate(${draw.x}px, ${draw.y}px)`,
     });
     Object.assign(this.contentEditImage.style, {
-      transform: `translate(${draw.x - visible.x}px, ${draw.y - visible.y}px) scale(${draw.w / sourceCanvas.width}, ${draw.h / sourceCanvas.height})`,
+      transform: `scale(${draw.w / sourceCanvas.width}, ${draw.h / sourceCanvas.height})`,
     });
   }
 
@@ -425,6 +443,7 @@ export class App {
     if (this.layoutOverlayPreviewRendererBlanked) return;
     this.layoutOverlayPreviewRendererBlanked = true;
     this.#composeVisibleSpread();
+    this.bookViewer.layout = this.#getRendererLayout();
     this.bookViewer.redraw();
   }
 
@@ -529,7 +548,7 @@ export class App {
         sourceBitmap: page.srcCanvas,
         layout,
         sideName,
-      });
+      }) ?? composeBlankPageCanvas({ layout, fill: "#ffffff" });
     } else {
       page.composedDisplayCanvas = null;
     }
@@ -539,7 +558,7 @@ export class App {
         sourceBitmap: page.previewCanvas,
         layout,
         sideName,
-      });
+      }) ?? composeBlankPageCanvas({ layout, fill: "#ffffff" });
     } else {
       page.composedPreviewCanvas = null;
     }
@@ -564,6 +583,24 @@ export class App {
     const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
     if (left?.pageIndex >= 0) this.composePage(left.pageIndex);
     if (right?.pageIndex >= 0) this.composePage(right.pageIndex);
+  }
+
+  #getRendererLayout(margins = computeMargins(this.book.layout, 1)) {
+    if (margins.ok) return this.book.layout;
+    const safeLayout = { ...this.book.layout };
+    const pw = Math.max(1, Number(safeLayout.pw) || 1);
+    const ph = Math.max(1, Number(safeLayout.ph) || 1);
+    const b = Math.max(0.0001, Number(safeLayout.b) || 0.0001);
+    const inner = Math.max(0, Number(safeLayout.mInner) || 0);
+    const top = Math.max(0, Number(safeLayout.mTop) || 0);
+    const bottom = Math.max(0, Number(safeLayout.mBottom) || 0);
+    const maxTextWidth = Math.max(0.01, pw - inner * b - 0.01);
+    const maxTextHeight = Math.max(0.01, ph - top * b - 0.01);
+    const requestedTextHeight = ph - (top + bottom) * b;
+    const textHeight = Math.min(Math.max(0.01, requestedTextHeight), maxTextHeight);
+    safeLayout.ratio = Math.max(0.01, Math.min(Number(safeLayout.ratio) || 0.01, maxTextWidth / textHeight));
+    safeLayout.mBottom = Math.max(0, (ph - top * b - textHeight) / b);
+    return safeLayout;
   }
 
   init() {
@@ -674,7 +711,7 @@ export class App {
     this.canvasInteraction.refreshDragCursor();
 
     // Push margin-owned settings into the viewer in case they changed.
-    this.bookViewer.layout = this.book.layout;
+    this.bookViewer.layout = this.#getRendererLayout(margins);
     this.bookViewer.display = this.book.display;
     this.bookViewer.showPageBorder = this.uiState.showPageBorder;
 
@@ -963,13 +1000,13 @@ export class App {
       const value = Number(event.target.value);
       if (!Number.isFinite(value)) return;
       this.book.display.paperThickness = Math.max(0, Math.min(1, value));
-      this.redraw();
+      this.scheduleDisplayRedraw();
     });
     document.getElementById("paper-texture-strength")?.addEventListener("input", event => {
       const value = Number(event.target.value);
       if (!Number.isFinite(value)) return;
       this.book.display.paperTextureStrength = Math.max(0, Math.min(1, value));
-      this.redraw();
+      this.scheduleDisplayRedraw();
     });
     document.getElementById("vdg")?.addEventListener("change", event => {
       this.uiState.showVdG = event.target.checked;
