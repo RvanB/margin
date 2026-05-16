@@ -126,7 +126,7 @@ export class App {
       getLayout: () => this.book.layout,
     });
     // Wire viewer events to keep the margin-owned page strip in sync.
-    this.bookViewer.on("sourcechange", () => this.pageStrip.update(this.viewerBook, this.#stripState()));
+    this.bookViewer.on("sourcechange", () => this.#updatePageStrip());
     this.bookViewer.on("beforenavigate", () => {
       if (this.uiState.appMode === "content") this.#setMode("layout", { resetNavigation: false });
     });
@@ -137,13 +137,16 @@ export class App {
       // handles, the per-page toolbar, etc. apply to the newly-visible
       // page. Prefer the right page (or the only page on the cover).
       this.#selectSpreadForEditing(spreadIndex);
-      this.pageStrip.update(this.viewerBook, this.#stripState());
+      this.#updatePageStrip();
     });
     // Scroll-track the strip with each in-flight navigation step (including
     // every spread of a queued multi-spread turn).
     this.bookViewer.on("effectivespreadchange", ({ spreadIndex }) => {
       this.uiState.effectiveSpread = spreadIndex;
-      this.pageStrip.update(this.viewerBook, this.#stripState());
+      this.#updatePageStrip();
+    });
+    this.bookViewer.on("zoomchange", () => {
+      this.redrawContentEditOverlay();
     });
     this.bookViewer.on("pageready", ({ pageIndex }) => {
       // Compose first so the viewer's subsequent redraw reads through
@@ -269,6 +272,22 @@ export class App {
   redrawContentEditOverlay() {
     if (this.overlayCanvas.width !== this.spreadCanvas.width) this.overlayCanvas.width = this.spreadCanvas.width;
     if (this.overlayCanvas.height !== this.spreadCanvas.height) this.overlayCanvas.height = this.spreadCanvas.height;
+    const stageWidth = this.spreadCanvas.style.width || `${this.spreadCanvas.width}px`;
+    const stageHeight = this.spreadCanvas.style.height || `${this.spreadCanvas.height}px`;
+    this.canvasStage.style.width = stageWidth;
+    this.canvasStage.style.height = stageHeight;
+    this.overlayCanvas.style.width = stageWidth;
+    this.overlayCanvas.style.height = stageHeight;
+    const displayWidth = parseFloat(stageWidth) || this.spreadCanvas.width;
+    const displayHeight = parseFloat(stageHeight) || this.spreadCanvas.height;
+    const layerScaleX = displayWidth / Math.max(1, this.spreadCanvas.width);
+    const layerScaleY = displayHeight / Math.max(1, this.spreadCanvas.height);
+    for (const layer of [this.contentEditLayer, this.layoutPreviewLayer]) {
+      layer.style.width = `${this.spreadCanvas.width}px`;
+      layer.style.height = `${this.spreadCanvas.height}px`;
+      layer.style.transform = `scale(${layerScaleX}, ${layerScaleY})`;
+      layer.style.transformOrigin = "0 0";
+    }
     const contentBlendMode = this.book.display.contentBlendMode || "multiply";
     const cssBlendMode = contentBlendMode === "source-over" ? "normal" : contentBlendMode;
     this.contentEditLayer.style.mixBlendMode = this.uiState.appMode === "content" ? cssBlendMode : "normal";
@@ -504,11 +523,20 @@ export class App {
     };
   }
 
+  #updatePageStrip() {
+    this.pageStrip.update(this.viewerBook, this.#stripState());
+  }
+
   #selectSpreadForEditing(spreadIndex) {
-    if (this.uiState.appMode !== "content") return;
     const { left, right } = this.viewerBook.spreadPageEntries(spreadIndex);
     const candidates = [left.pageIndex, right.pageIndex].filter(i => i >= 0 && i < this.viewerBook.pages.length);
     if (!candidates.length) return;
+    if (this.uiState.appMode !== "content") {
+      const next = candidates[0];
+      this.uiState.editingPageIdx = next;
+      this.uiState.selectedPageIdxs = new Set([next]);
+      return;
+    }
     // Keep the previously-edited page if it's on this spread; otherwise
     // default to the left page (or the right one if there's no left).
     const previous = this.uiState.editingPageIdx;
@@ -525,6 +553,10 @@ export class App {
     return this.spreadComposer.getEffectEntry(page);
   }
 
+  #isBlankContentPage(page) {
+    return page?.source?.type === "blank";
+  }
+
   // Compose a page's bitmaps into "ready to display" canvases. Called when
   // a fresh source bitmap arrives via LazyPageLoader, and whenever
   // layout/page settings change. The viewer reads these via ViewerPage's
@@ -536,7 +568,8 @@ export class App {
     const layout = this.book.layout;
     if (
       (this.uiState.appMode === "content" && pageIndex === this.uiState.editingPageIdx) ||
-      (this.layoutOverlayPreviewActive && this.#isPageOnCurrentSpread(pageIndex))
+      (this.layoutOverlayPreviewActive && this.#isPageOnCurrentSpread(pageIndex)) ||
+      this.#isBlankContentPage(page)
     ) {
       page.composedDisplayCanvas = composeBlankPageCanvas({
         layout,
@@ -552,7 +585,12 @@ export class App {
     } else {
       page.composedDisplayCanvas = null;
     }
-    if (page.previewCanvas) {
+    if (this.#isBlankContentPage(page)) {
+      page.composedPreviewCanvas = composeBlankPageCanvas({
+        layout,
+        fill: "#ffffff",
+      });
+    } else if (page.previewCanvas) {
       page.composedPreviewCanvas = composePageCanvas({
         page,
         sourceBitmap: page.previewCanvas,
@@ -729,12 +767,16 @@ export class App {
     }
 
     if (!this.isInteractiveEdit && !this.placedPreviewManager.isRefreshAllQueued) {
-      this.pageStrip.update(this.viewerBook, this.#stripState());
+      this.#updatePageStrip();
     }
   }
 
   handlePageStripClick(pageIndex, event) {
     const targetSpread = Math.floor((pageIndex + 1) / 2);
+    if (this.uiState.appMode !== "content") {
+      this.uiState.editingPageIdx = pageIndex;
+      this.uiState.selectedPageIdxs = new Set([pageIndex]);
+    }
     if (this.uiState.appMode === "content") {
       if (event.metaKey || event.ctrlKey) {
         this.placedPreviewManager.endInteractive({ redraw: false });
@@ -819,21 +861,19 @@ export class App {
       const projectFiles = items.filter(file => isProjectJsonFile(file));
       const totalFiles = contentFiles.length + projectFiles.length;
       let processedFiles = 0;
-      let appendedPages = false;
+      const loadedPages = [];
 
       for (const file of contentFiles) {
         this.busyIndicator.setLoadProgress("Loading content", processedFiles, totalFiles);
         if (isPdfFile(file)) {
           const pages = await readPdfPagesFromFile(file);
-          pages.forEach(page => this.book.addPage(page));
-          appendedPages = true;
+          loadedPages.push(...pages);
           processedFiles += 1;
           continue;
         }
 
         try {
-          this.book.addPage(await readImagePageFromFile(file));
-          appendedPages = true;
+          loadedPages.push(await readImagePageFromFile(file));
         } catch (error) {
           console.error("Failed to load dropped file:", error);
           window.alert(`Could not load "${file.name}".`);
@@ -841,7 +881,7 @@ export class App {
         processedFiles += 1;
       }
 
-      if (!appendedPages) {
+      if (!loadedPages.length) {
         for (const file of projectFiles) {
           this.busyIndicator.setLoadProgress("Loading settings", processedFiles, totalFiles);
           await this.loadProjectFile(file);
@@ -851,6 +891,7 @@ export class App {
       }
 
       this.busyIndicator.setLoadProgress("Finalizing load", processedFiles, totalFiles);
+      this.book.pages.splice(0, this.book.pages.length, ...loadedPages);
       this.pageSource.notifyPageCountChanged();
       this.lazyPageLoader.reset();
       this.navigationController.cancelQueuedSpreadTurns();
