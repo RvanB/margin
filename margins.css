@@ -990,6 +990,7 @@ input[type="range"]::-moz-range-progress {
   height: 100%;
   max-width: none;
   max-height: none;
+  filter: drop-shadow(gray 0px 11px 10px);
 }
 
 #content-edit-layer,
